@@ -25,7 +25,6 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -36,7 +35,6 @@ public class MainActivity extends AppCompatActivity {
 
     private WebView webView;
     private ProgressBar progressBar;
-    private SwipeRefreshLayout swipeRefreshLayout;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -46,7 +44,6 @@ public class MainActivity extends AppCompatActivity {
 
         webView = findViewById(R.id.webView);
         progressBar = findViewById(R.id.progressBar);
-        swipeRefreshLayout = findViewById(R.id.swipeRefreshLayout);
 
         // 1. Start Background Keep-Alive Service
         startKeepAliveService();
@@ -57,13 +54,10 @@ public class MainActivity extends AppCompatActivity {
         // 3. Request Battery Optimization Exemption (Crucial for Doze mode)
         requestBatteryOptimizationExemption();
 
-        // 4. Configure WebView with full persistence and Chrome User-Agent
+        // 4. Configure WebView with full persistence, Chrome User-Agent, and flawless scrolling
         setupWebView();
 
-        // 5. Setup Pull-to-refresh
-        swipeRefreshLayout.setOnRefreshListener(() -> webView.reload());
-
-        // 6. Load the AI Studio Applet URL
+        // 5. Load the AI Studio Applet URL
         if (savedInstanceState == null) {
             webView.loadUrl(TARGET_URL);
         } else {
@@ -116,6 +110,11 @@ public class MainActivity extends AppCompatActivity {
 
     @SuppressLint("SetJavaScriptEnabled")
     private void setupWebView() {
+        // Fix scrolling inside iframes and nested elements
+        webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        webView.setVerticalScrollBarEnabled(false);
+        webView.setHorizontalScrollBarEnabled(false);
+
         WebSettings settings = webView.getSettings();
 
         // Enable complete JavaScript & DOM storage
@@ -135,12 +134,11 @@ public class MainActivity extends AppCompatActivity {
         settings.setSupportMultipleWindows(true);
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
 
-        // Viewport & zoom
+        // Viewport & touch responsiveness
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(true);
-        settings.setSupportZoom(true);
-        settings.setBuiltInZoomControls(true);
-        settings.setDisplayZoomControls(false);
+        settings.setSupportZoom(false); // Disabling zoom controls prevents touch-gesture conflicts when scrolling
+        settings.setBuiltInZoomControls(false);
 
         // BYPASS GOOGLE "disallowed_useragent" (403 Error on login)
         // Strip "; wv" and Version/X.X so Google recognizes it as standard Chrome Mobile
@@ -162,7 +160,6 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 String url = request.getUrl().toString();
-                // Allow Google login and ai.studio to stay inside WebView
                 if (url.contains("google.com") || url.contains("ai.studio") || url.contains("aistudio.google.com")) {
                     return false;
                 }
@@ -179,7 +176,6 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 progressBar.setVisibility(View.GONE);
-                swipeRefreshLayout.setRefreshing(false);
             }
         });
 

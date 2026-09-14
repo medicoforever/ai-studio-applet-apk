@@ -1,4 +1,4 @@
-﻿name: Build Android APK
+name: Build Android APK
 
 on:
   push:
@@ -46,18 +46,16 @@ jobs:
       - name: Create GitHub Release with APK Downloads
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0
-          name: "AI Studio Applet APK v1.0.0"
+          tag_name: v1.0.1
+          name: "AI Studio Applet APK v1.0.1 (Scrolling Fix)"
           body: |
-            ## Always-Active AI Studio Applet APK
+            ## Always-Active AI Studio Applet APK v1.0.1
             Target URL: `https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true`
             
-            ### Included Features:
-            - **Foreground Service**: Ongoing notification keeps Android from pausing or killing the app.
-            - **Partial WakeLock**: Keeps the CPU awake even when your phone screen locks.
-            - **No Sleep**: WebView JS execution and DOM timers never pause when minimized.
-            - **Google Sign-In Workaround**: Spoofs standard Mobile Chrome User-Agent to bypass `403 disallowed_useragent`.
-            - **Auto Permissions**: WebRTC audio and microphone permissions handled automatically.
+            ### Changes in v1.0.1:
+            - **Fixed Upward Scroll Issue**: Removed the conflicting swipe wrapper that was intercepting drag-down/scroll-up touch gestures inside the sandboxed applet container.
+            - **Smooth Bi-directional Scrolling**: Unlocked native touch event flow for nested containers and iframes.
+            - **Background Keep-Alive**: Maintained Foreground Service and WakeLock for 24/7 background activity.
           files: final_apk/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

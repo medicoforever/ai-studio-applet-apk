@@ -1,0 +1,63 @@
+﻿name: Build Android APK
+
+on:
+  push:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Compile APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.5
+
+      - name: Build Debug & Release APKs
+        run: gradle assembleDebug assembleRelease --stacktrace
+
+      - name: Prepare APKs
+        run: |
+          mkdir -p final_apk
+          cp app/build/outputs/apk/debug/*.apk final_apk/AIStudio-Applet-Debug.apk || true
+          cp app/build/outputs/apk/release/*.apk final_apk/AIStudio-Applet-Release.apk || true
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIStudio-Applet-APKs
+          path: final_apk/*
+
+      - name: Create GitHub Release with APK Downloads
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: "AI Studio Applet APK v1.0.0"
+          body: |
+            ## Always-Active AI Studio Applet APK
+            Target URL: `https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true`
+            
+            ### Included Features:
+            - **Foreground Service**: Ongoing notification keeps Android from pausing or killing the app.
+            - **Partial WakeLock**: Keeps the CPU awake even when your phone screen locks.
+            - **No Sleep**: WebView JS execution and DOM timers never pause when minimized.
+            - **Google Sign-In Workaround**: Spoofs standard Mobile Chrome User-Agent to bypass `403 disallowed_useragent`.
+            - **Auto Permissions**: WebRTC audio and microphone permissions handled automatically.
+          files: final_apk/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

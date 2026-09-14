@@ -46,16 +46,17 @@ jobs:
       - name: Create GitHub Release with APK Downloads
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.4
-          name: "RADDOC's Dictation App v1.0.4 (Google Drive OAuth Fix)"
+          tag_name: v1.0.5
+          name: "RADDOC's Dictation App v1.0.5 (Blank Screen & OAuth Fix)"
           body: |
-            ## RADDOC's Dictation App v1.0.4
+            ## RADDOC's Dictation App v1.0.5
             Target URL: `https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true`
             
-            ### Fixes in v1.0.4:
-            - **Google Drive OAuth Dialog**: Implemented an in-app OAuth Dialog window for Google Drive authentication so `window.opener` is preserved and OAuth tokens pass directly into the dictation applet without endless loading.
-            - **Editor Protection**: Prevented the app from navigating to the "Remix to make this app your own" editor page by locking it to fullscreenApplet mode.
-            - **Browse Drive & Links**: External links (Drive folder, Telegram support link) launch smoothly in external apps.
+            ### Fixes in v1.0.5:
+            - **Fixed Blank Screen**: Added subframe pass-through so the sandboxed applet iframe, scripts, and components load without interference.
+            - **Fixed Google Sign-In Cancellation**: Fixed URL matcher so Google Sign-in URLs do not trigger false-positive editor redirections.
+            - **Hardware Acceleration Enabled**: Accelerated graphics and WebView rendering on all devices.
+            - **Google Drive OAuth Dialog**: In-app authorization dialog with `window.opener` persistence for Google Drive sync.
             - **Maintained 24/7 Keep-Alive**: Background Foreground Service and WakeLock remain active.
           files: final_apk/*
         env:

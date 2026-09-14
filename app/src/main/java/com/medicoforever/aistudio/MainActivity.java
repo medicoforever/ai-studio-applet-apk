@@ -10,6 +10,7 @@ import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
+import android.net.http.SslError;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -22,6 +23,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
+import android.webkit.SslErrorHandler;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -145,6 +147,12 @@ public class MainActivity extends AppCompatActivity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                // CRITICAL FIX FOR BLANK SCREEN:
+                // If this is a subframe (e.g. the applet iframe, scripts, APIs, or auth components),
+                // NEVER intercept it! Let the WebView load the internal applet components directly!
+                if (!request.isForMainFrame()) {
+                    return false;
+                }
                 return handleMainUrlLoading(view, request.getUrl().toString());
             }
 
@@ -152,6 +160,11 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
                 return handleMainUrlLoading(view, url);
+            }
+
+            @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                handler.proceed();
             }
 
             @Override
@@ -210,7 +223,7 @@ public class MainActivity extends AppCompatActivity {
                 return true;
             }
 
-            // CRITICAL: Handle Popups / Google OAuth Dialogs properly so window.opener is preserved!
+            // Handles Google Drive OAuth / Popups cleanly without destroying main applet
             @Override
             public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
                 return createPopupWindow(resultMsg);
@@ -234,7 +247,6 @@ public class MainActivity extends AppCompatActivity {
         settings.setBuiltInZoomControls(false);
     }
 
-    // Handles Popups (Google Drive OAuth, Google Sign-in dialogs, Google Picker)
     @SuppressLint("SetJavaScriptEnabled")
     private boolean createPopupWindow(Message resultMsg) {
         final Dialog dialog = new Dialog(MainActivity.this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
@@ -243,7 +255,7 @@ public class MainActivity extends AppCompatActivity {
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setBackgroundColor(Color.parseColor("#121212"));
 
-        // Header bar
+        // Header bar with Close button
         LinearLayout header = new LinearLayout(MainActivity.this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setBackgroundColor(Color.parseColor("#1E1F20"));
@@ -287,6 +299,9 @@ public class MainActivity extends AppCompatActivity {
         popupWebView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
+                if (!req.isForMainFrame()) {
+                    return false;
+                }
                 return handlePopupUrl(dialog, req.getUrl().toString());
             }
 
@@ -297,9 +312,14 @@ public class MainActivity extends AppCompatActivity {
             }
 
             @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                handler.proceed();
+            }
+
+            @Override
             public void onPageFinished(WebView v, String url) {
                 super.onPageFinished(v, url);
-                // If the OAuth flow finished and reached success or blank, dismiss after brief delay
+                // When OAuth reaches approval, close window, or success, auto-dismiss
                 if (url.contains("oauth2/approval") || url.contains("close_window") || url.contains("success")) {
                     v.postDelayed(() -> {
                         try {
@@ -322,7 +342,6 @@ public class MainActivity extends AppCompatActivity {
 
         dialog.show();
 
-        // Bind transport
         WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
         transport.setWebView(popupWebView);
         resultMsg.sendToTarget();
@@ -334,24 +353,18 @@ public class MainActivity extends AppCompatActivity {
             return false;
         }
 
-        // Custom scheme in popup
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             handleCustomScheme(url);
             dialog.dismiss();
             return true;
         }
 
-        // Keep OAuth, Google Accounts, and Google Sign-in inside the popup
-        if (url.contains("accounts.google.com") ||
-            url.contains("oauth") ||
-            url.contains("servicelogin") ||
-            url.contains("signin") ||
-            url.contains("google.com/accounts") ||
-            url.contains("googleusercontent.com")) {
-            return false; // Let popupWebView load it!
+        // Keep Google Auth and app callback inside popup
+        if (isInternalUrl(url)) {
+            return false;
         }
 
-        // External links (e.g. Telegram, Google Docs, external drive links)
+        // External URLs open in browser / app
         try {
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -368,11 +381,19 @@ public class MainActivity extends AppCompatActivity {
             return false;
         }
 
+        Uri uri = Uri.parse(url);
+        String host = uri.getHost() != null ? uri.getHost().toLowerCase() : "";
+        String path = uri.getPath() != null ? uri.getPath() : "";
+
         // 1. STRICT REMIX/EDITOR PROTECTION:
-        // If anything navigates to the applet workspace/editor page without fullscreen, force fullscreen!
-        if (url.contains("/apps/3f0807e3-2494-4289-a3a6-c12032da731c") && !url.contains("fullscreenApplet=true")) {
-            view.loadUrl(TARGET_URL);
-            return true;
+        // ONLY trigger if the target host is actually ai.studio / aistudio.google.com and on the applet path
+        // DO NOT trigger if this is Google sign-in (accounts.google.com)!
+        if ((host.equals("ai.studio") || host.equals("aistudio.google.com")) && path.contains("3f0807e3-2494-4289-a3a6-c12032da731c")) {
+            String query = uri.getQuery();
+            if (query == null || !query.contains("fullscreenApplet=true")) {
+                view.loadUrl(TARGET_URL);
+                return true;
+            }
         }
 
         // 2. Custom schemes (intent:, tg:, mailto:, etc.)
@@ -408,6 +429,7 @@ public class MainActivity extends AppCompatActivity {
                lower.contains("apis.google.com") ||
                lower.contains("gstatic.com") ||
                lower.contains("googleusercontent.com") ||
+               lower.contains("usercontent.goog") ||
                lower.contains("/signin") ||
                lower.contains("servicelogin");
     }

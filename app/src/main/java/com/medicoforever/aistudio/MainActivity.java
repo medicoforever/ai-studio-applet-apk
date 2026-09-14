@@ -60,7 +60,7 @@ import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
 
-    public static final String TARGET_URL = "https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true";
+    public static final String TARGET_URL = "https://aistudio.google.com/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true";
     private static final int PERMISSION_REQ_CODE = 2001;
     private static final int FILE_CHOOSER_REQ_CODE = 3001;
 
@@ -302,7 +302,11 @@ public class MainActivity extends AppCompatActivity {
 
         String js = "(function() {" +
             "try {" +
-                "if (!window.location.hostname.includes('ai.studio')) return;" +
+                "function isAiStudioHost() {" +
+                    "var h = (window.location.hostname || '').toLowerCase();" +
+                    "return h.indexOf('aistudio') !== -1 || h.indexOf('ai.studio') !== -1;" +
+                "}" +
+                "if (!isAiStudioHost()) return;" +
                 "if (window.__raddocEarlyInjected) return;" +
                 "window.__raddocEarlyInjected = true;" +
 
@@ -328,10 +332,10 @@ public class MainActivity extends AppCompatActivity {
                         "var isErr = false;" +
                         "if (typeof d === 'string') {" +
                             "var s = d.toLowerCase();" +
-                            "if (s.includes('\"error\"') || s.includes('switchtochat') || s.includes('view_chat')) isErr = true;" +
+                            "if (s.indexOf('error') !== -1 || s.indexOf('switchtochat') !== -1 || s.indexOf('view_chat') !== -1) isErr = true;" +
                         "} else if (typeof d === 'object') {" +
                             "var t = String(d.type || d.action || d.event || d.kind || '').toLowerCase();" +
-                            "if (t.includes('error') || t.includes('reject') || t.includes('fail') || t.includes('crash') || t.includes('chat')) isErr = true;" +
+                            "if (t.indexOf('error') !== -1 || t.indexOf('reject') !== -1 || t.indexOf('fail') !== -1 || t.indexOf('crash') !== -1 || t.indexOf('chat') !== -1) isErr = true;" +
                             "if (d.isError === true || d.hasError === true) isErr = true;" +
                         "}" +
                         "if (isErr) {" +
@@ -345,7 +349,7 @@ public class MainActivity extends AppCompatActivity {
                 "try {" +
                     "var _ps = history.pushState;" +
                     "history.pushState = function(state, title, url) {" +
-                        "if (url && typeof url === 'string' && url.indexOf('fullscreenApplet') === -1 && window.location.hostname.includes('ai.studio')) {" +
+                        "if (url && typeof url === 'string' && url.indexOf('fullscreenApplet') === -1 && isAiStudioHost()) {" +
                             "var sep = url.indexOf('?') !== -1 ? '&' : '?';" +
                             "url = url + sep + 'fullscreenApplet=true';" +
                         "}" +
@@ -353,7 +357,7 @@ public class MainActivity extends AppCompatActivity {
                     "};" +
                     "var _rs = history.replaceState;" +
                     "history.replaceState = function(state, title, url) {" +
-                        "if (url && typeof url === 'string' && url.indexOf('fullscreenApplet') === -1 && window.location.hostname.includes('ai.studio')) {" +
+                        "if (url && typeof url === 'string' && url.indexOf('fullscreenApplet') === -1 && isAiStudioHost()) {" +
                             "var sep = url.indexOf('?') !== -1 ? '&' : '?';" +
                             "url = url + sep + 'fullscreenApplet=true';" +
                         "}" +
@@ -378,20 +382,26 @@ public class MainActivity extends AppCompatActivity {
         }
 
         String js = "(function() {" +
-            "if (!window.location.hostname.includes('ai.studio')) return;" +
+            "function isAiStudioHost() {" +
+                "var h = (window.location.hostname || '').toLowerCase();" +
+                "return h.indexOf('aistudio') !== -1 || h.indexOf('ai.studio') !== -1;" +
+            "}" +
+            "if (!isAiStudioHost()) return;" +
+
             "if (window.__raddocCleanInjected) {" +
                 "if (typeof window.__raddocClean === 'function') window.__raddocClean();" +
                 "return;" +
             "}" +
             "window.__raddocCleanInjected = true;" +
+
             "window.__raddocClean = function() {" +
                 "try {" +
-                    "if (!window.location.hostname.includes('ai.studio')) return;" +
+                    "if (!isAiStudioHost()) return;" +
 
                     // 1. Hide 'This app was developed by another user' disclaimer banner
-                    "var all = document.querySelectorAll('div, footer, p, span, aside, section');" +
-                    "for (var j = 0; j < all.length; j++) {" +
-                        "var el = all[j];" +
+                    "var allDivs = document.querySelectorAll('div, footer, p, span, aside, section');" +
+                    "for (var j = 0; j < allDivs.length; j++) {" +
+                        "var el = allDivs[j];" +
                         "var txt = el.textContent || '';" +
                         "if (txt.indexOf('This app was developed by another user') !== -1) {" +
                             "var p = el;" +
@@ -402,43 +412,71 @@ public class MainActivity extends AppCompatActivity {
                         "}" +
                     "}" +
 
-                    // 2. ENFORCE PREVIEW TAB: Automatically click 'Preview' tab whenever Chat becomes active or on error
-                    "var tabs = document.querySelectorAll('button, [role=\"tab\"], [role=\"button\"], a, div');" +
+                    // 2. DETECT CHAT VIEW & ENFORCE PREVIEW
+                    "var bodyText = document.body ? (document.body.innerText || '') : '';" +
+                    "var isChatShowing = (bodyText.indexOf('Remix to make this app your own') !== -1 || " +
+                                         "bodyText.indexOf('Here are some ideas to try') !== -1 || " +
+                                         "bodyText.indexOf('Generate video from text') !== -1);" +
+
+                    // Find Preview and Chat buttons across all elements
+                    "var allElements = document.querySelectorAll('button, [role=\"tab\"], [role=\"button\"], a, div, span');" +
                     "var previewBtn = null;" +
                     "var chatBtn = null;" +
-                    "for (var t = 0; t < tabs.length; t++) {" +
-                        "var tab = tabs[t];" +
-                        "var ttxt = (tab.textContent || '').trim();" +
-                        "var aria = tab.getAttribute('aria-label') || '';" +
-                        "var role = tab.getAttribute('role') || '';" +
-                        "if (role === 'tab' || tab.tagName === 'BUTTON' || aria === 'Preview' || aria === 'Chat') {" +
-                            "if (ttxt === 'Preview' || aria === 'Preview') {" +
-                                "previewBtn = tab;" +
-                            "} else if (ttxt === 'Chat' || aria === 'Chat') {" +
-                                "chatBtn = tab;" +
-                            "}" +
+                    "for (var t = 0; t < allElements.length; t++) {" +
+                        "var elem = allElements[t];" +
+                        "var etxt = (elem.textContent || '').trim();" +
+                        "var earia = elem.getAttribute('aria-label') || '';" +
+                        "if (etxt === 'Preview' || earia === 'Preview') {" +
+                            "previewBtn = elem.closest('button, [role=\"tab\"], [role=\"button\"], a') || elem;" +
+                        "} else if (etxt === 'Chat' || earia === 'Chat') {" +
+                            "chatBtn = elem.closest('button, [role=\"tab\"], [role=\"button\"], a') || elem;" +
                         "}" +
                     "}" +
 
-                    "if (previewBtn) {" +
-                        "var isChatActive = chatBtn && (" +
-                            "chatBtn.getAttribute('aria-selected') === 'true' || " +
+                    "var isChatSelected = isChatShowing;" +
+                    "if (chatBtn) {" +
+                        "if (chatBtn.getAttribute('aria-selected') === 'true' || " +
                             "chatBtn.classList.contains('active') || " +
                             "chatBtn.classList.contains('selected') || " +
-                            "chatBtn.classList.contains('mdc-tab--active')" +
-                        ");" +
-                        "var isPreviewActive = (" +
-                            "previewBtn.getAttribute('aria-selected') === 'true' || " +
+                            "chatBtn.classList.contains('mdc-tab--active')) {" +
+                            "isChatSelected = true;" +
+                        "}" +
+                    "}" +
+                    "var isPreviewSelected = false;" +
+                    "if (previewBtn) {" +
+                        "if (previewBtn.getAttribute('aria-selected') === 'true' || " +
                             "previewBtn.classList.contains('active') || " +
                             "previewBtn.classList.contains('selected') || " +
-                            "previewBtn.classList.contains('mdc-tab--active')" +
-                        ");" +
-                        "if (isChatActive || !isPreviewActive) {" +
-                            "previewBtn.click();" +
+                            "previewBtn.classList.contains('mdc-tab--active')) {" +
+                            "isPreviewSelected = true;" +
                         "}" +
                     "}" +
 
-                    // 3. Move navigation bar offscreen rather than 'display: none' so programmatic clicks remain 100% active
+                    // If Chat is selected or showing, or Preview is not selected: CLICK PREVIEW!
+                    "if (previewBtn && (isChatSelected || !isPreviewSelected)) {" +
+                        "previewBtn.click();" +
+                        "try {" +
+                            "previewBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));" +
+                        "} catch(e) {}" +
+                    "}" +
+
+                    // If Chat view STILL persists after clicking Preview, trigger native fallback reload!
+                    "if (isChatShowing) {" +
+                        "if (!window.__raddocChatSince) { window.__raddocChatSince = Date.now(); }" +
+                        "else if (Date.now() - window.__raddocChatSince > 800) {" +
+                            "window.__raddocChatSince = Date.now();" +
+                            "if (window.AndroidBridge && typeof window.AndroidBridge.forceRestorePreview === 'function') {" +
+                                "window.AndroidBridge.forceRestorePreview();" +
+                            "} else {" +
+                                "window.location.replace('https://aistudio.google.com/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true');" +
+                            "}" +
+                        "}" +
+                    "} else {" +
+                        "window.__raddocChatSince = 0;" +
+                    "}" +
+
+                    // 3. Move the navigation bar offscreen so the user doesn't see Chat/Preview bottom bar,
+                    // but programmatic .click() stays 100% active
                     "var navs = document.querySelectorAll('nav, div, footer, [role=\"tablist\"], [role=\"navigation\"]');" +
                     "for (var k = 0; k < navs.length; k++) {" +
                         "var n = navs[k];" +
@@ -455,7 +493,7 @@ public class MainActivity extends AppCompatActivity {
                         "}" +
                     "}" +
 
-                    // 4. Hide '...' more options menu button
+                    // 4. Hide '...' more options button bar
                     "var btns = document.querySelectorAll('button, [role=\"button\"]');" +
                     "for (var b = 0; b < btns.length; b++) {" +
                         "var btn = btns[b];" +
@@ -479,8 +517,8 @@ public class MainActivity extends AppCompatActivity {
                         "chatPanels[c].style.setProperty('display', 'none', 'important');" +
                     "}" +
 
-                    // 6. Ensure fullscreenApplet=true query is preserved in URL
-                    "if (window.location.pathname.includes('3f0807e3-2494-4289-a3a6-c12032da731c') && !window.location.search.includes('fullscreenApplet=true')) {" +
+                    // 6. Keep URL parameter fullscreenApplet=true
+                    "if (window.location.pathname.indexOf('3f0807e3-2494-4289-a3a6-c12032da731c') !== -1 && window.location.search.indexOf('fullscreenApplet=true') === -1) {" +
                         "try {" +
                             "var u = new URL(window.location.href);" +
                             "u.searchParams.set('fullscreenApplet', 'true');" +
@@ -489,9 +527,10 @@ public class MainActivity extends AppCompatActivity {
                     "}" +
                 "} catch(e) {}" +
             "};" +
+
             "window.__raddocClean();" +
             "if (!window.__raddocInterval) {" +
-                "window.__raddocInterval = setInterval(window.__raddocClean, 150);" +
+                "window.__raddocInterval = setInterval(window.__raddocClean, 100);" +
             "}" +
             "if (!window.__raddocObserver && document.body) {" +
                 "window.__raddocObserver = new MutationObserver(window.__raddocClean);" +
@@ -507,6 +546,15 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void openHtmlInChrome(String htmlContent, String filename) {
             runOnUiThread(() -> exportAndOpenInChrome(htmlContent, filename));
+        }
+
+        @JavascriptInterface
+        public void forceRestorePreview() {
+            runOnUiThread(() -> {
+                if (webView != null) {
+                    webView.loadUrl(TARGET_URL);
+                }
+            });
         }
     }
 

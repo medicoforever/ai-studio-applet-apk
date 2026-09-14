@@ -15,7 +15,7 @@ import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 
 public class BackgroundKeepAliveService extends Service {
-    public static final String CHANNEL_ID = "ai_studio_bg_channel";
+    public static final String CHANNEL_ID = "raddoc_dictation_bg_channel";
     public static final int NOTIFICATION_ID = 1001;
     private PowerManager.WakeLock wakeLock;
 
@@ -30,10 +30,10 @@ public class BackgroundKeepAliveService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
-                "AI Studio Background Keep-Alive",
+                "RADDOC's Dictation Background Service",
                 NotificationManager.IMPORTANCE_LOW
             );
-            channel.setDescription("Ensures AI Studio Applet does not sleep when minimized");
+            channel.setDescription("Keeps RADDOC's dictation app active when minimized");
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {
                 manager.createNotificationChannel(channel);
@@ -45,7 +45,7 @@ public class BackgroundKeepAliveService extends Service {
         try {
             PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
             if (powerManager != null) {
-                wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AIStudio::KeepAliveWakeLock");
+                wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RADDOC::DictationWakeLock");
                 wakeLock.setReferenceCounted(false);
                 wakeLock.acquire();
             }
@@ -66,9 +66,9 @@ public class BackgroundKeepAliveService extends Service {
         );
 
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("AI Studio Applet Active")
+            .setContentTitle("RADDOC's dictation app Active")
             .setContentText("Running continuously in background (No Sleep)")
-            .setSmallIcon(android.R.drawable.ic_popup_sync)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)

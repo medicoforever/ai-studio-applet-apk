@@ -34,28 +34,29 @@ jobs:
       - name: Prepare APKs
         run: |
           mkdir -p final_apk
-          cp app/build/outputs/apk/debug/*.apk final_apk/AIStudio-Applet-Debug.apk || true
-          cp app/build/outputs/apk/release/*.apk final_apk/AIStudio-Applet-Release.apk || true
+          cp app/build/outputs/apk/debug/*.apk final_apk/RADDOC-Dictation-Debug.apk || true
+          cp app/build/outputs/apk/release/*.apk final_apk/RADDOC-Dictation-Release.apk || true
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: AIStudio-Applet-APKs
+          name: RADDOC-Dictation-APKs
           path: final_apk/*
 
       - name: Create GitHub Release with APK Downloads
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.1
-          name: "AI Studio Applet APK v1.0.1 (Scrolling Fix)"
+          tag_name: v1.0.2
+          name: "RADDOC's Dictation App v1.0.2"
           body: |
-            ## Always-Active AI Studio Applet APK v1.0.1
+            ## RADDOC's Dictation App v1.0.2
             Target URL: `https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true`
             
-            ### Changes in v1.0.1:
-            - **Fixed Upward Scroll Issue**: Removed the conflicting swipe wrapper that was intercepting drag-down/scroll-up touch gestures inside the sandboxed applet container.
-            - **Smooth Bi-directional Scrolling**: Unlocked native touch event flow for nested containers and iframes.
-            - **Background Keep-Alive**: Maintained Foreground Service and WakeLock for 24/7 background activity.
+            ### Branding & Icon Updates:
+            - **App Name**: Renamed to **RADDOC's dictation app**.
+            - **Logo / Icon**: Yin Yang black and white design applied across all launcher densities and adaptive icons.
+            - **Smooth Scrolling**: Native bi-directional scrolling with zero gesture locks.
+            - **Keep-Alive**: Background Foreground Service and WakeLock enabled.
           files: final_apk/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

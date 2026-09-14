@@ -217,7 +217,9 @@ public class MainActivity extends AppCompatActivity {
                 super.onPageFinished(view, url);
                 progressBar.setVisibility(View.GONE);
                 CookieManager.getInstance().flush();
-                injectUiCleaner(view);
+                if (url != null && (url.contains("ai.studio") || url.contains("aistudio.google.com")) && !url.contains("accounts.google")) {
+                    injectUiCleaner(view);
+                }
             }
         });
 
@@ -226,7 +228,8 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
                 progressBar.setProgress(newProgress);
-                if (newProgress >= 50) {
+                String currentUrl = view.getUrl();
+                if (newProgress >= 60 && currentUrl != null && (currentUrl.contains("ai.studio") || currentUrl.contains("aistudio.google.com")) && !currentUrl.contains("accounts.google")) {
                     injectUiCleaner(view);
                 }
                 if (newProgress == 100) {
@@ -281,10 +284,19 @@ public class MainActivity extends AppCompatActivity {
     }
 
     // Injects UI cleaner into host AI Studio page to remove bottom disclaimer banner,
-    // remove Chat / Preview tabs & options menu, and make the applet iframe occupy 100% full screen
+    // remove Chat / Preview tabs & options menu, WITHOUT touching iframes or sign-in pages
     private void injectUiCleaner(WebView view) {
         if (view == null) return;
+        String currentUrl = view.getUrl();
+        if (currentUrl == null || (!currentUrl.contains("ai.studio") && !currentUrl.contains("aistudio.google.com"))) {
+            return;
+        }
+        if (currentUrl.contains("accounts.google") || currentUrl.contains("signin") || currentUrl.contains("oauth")) {
+            return;
+        }
+
         String js = "(function() {" +
+            "if (!window.location.hostname.includes('ai.studio')) return;" +
             "if (window.__raddocCleanInjected) {" +
                 "if (typeof window.__raddocClean === 'function') window.__raddocClean();" +
                 "return;" +
@@ -292,20 +304,7 @@ public class MainActivity extends AppCompatActivity {
             "window.__raddocCleanInjected = true;" +
             "window.__raddocClean = function() {" +
                 "try {" +
-                    "var iframes = document.querySelectorAll('iframe');" +
-                    "for (var i = 0; i < iframes.length; i++) {" +
-                        "var ifr = iframes[i];" +
-                        "if (ifr.offsetWidth > 60 || ifr.offsetHeight > 60 || ifr.getAttribute('sandbox') || (ifr.src && ifr.src.indexOf('usercontent') !== -1)) {" +
-                            "ifr.style.setProperty('position', 'fixed', 'important');" +
-                            "ifr.style.setProperty('top', '0px', 'important');" +
-                            "ifr.style.setProperty('left', '0px', 'important');" +
-                            "ifr.style.setProperty('width', '100vw', 'important');" +
-                            "ifr.style.setProperty('height', '100vh', 'important');" +
-                            "ifr.style.setProperty('max-height', '100vh', 'important');" +
-                            "ifr.style.setProperty('z-index', '99999', 'important');" +
-                            "ifr.style.setProperty('border', 'none', 'important');" +
-                        "}" +
-                    "}" +
+                    "if (!window.location.hostname.includes('ai.studio')) return;" +
                     "var all = document.querySelectorAll('div, footer, p, span, aside, section');" +
                     "for (var j = 0; j < all.length; j++) {" +
                         "var el = all[j];" +
@@ -328,10 +327,22 @@ public class MainActivity extends AppCompatActivity {
                             "n.style.setProperty('height', '0px', 'important');" +
                         "}" +
                     "}" +
+                    "var btns = document.querySelectorAll('button, [role=\"button\"]');" +
+                    "for (var b = 0; b < btns.length; b++) {" +
+                        "var btn = btns[b];" +
+                        "var btxt = (btn.textContent || '').trim();" +
+                        "var aria = btn.getAttribute('aria-label') || '';" +
+                        "if (btxt === '...' || aria === 'More' || aria === 'More options') {" +
+                            "var bar = btn.closest('nav, [role=\"tablist\"], div');" +
+                            "if (bar && bar !== document.body && bar.offsetHeight < 80) {" +
+                                "bar.style.setProperty('display', 'none', 'important');" +
+                            "}" +
+                        "}" +
+                    "}" +
                 "} catch(e) {}" +
             "};" +
             "window.__raddocClean();" +
-            "setInterval(window.__raddocClean, 500);" +
+            "setInterval(window.__raddocClean, 600);" +
             "var obs = new MutationObserver(window.__raddocClean);" +
             "if (document.body) { obs.observe(document.body, { childList: true, subtree: true }); }" +
             "document.addEventListener('DOMContentLoaded', window.__raddocClean);" +

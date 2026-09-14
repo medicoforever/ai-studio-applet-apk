@@ -32,17 +32,31 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.content.ActivityNotFoundException;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebResourceResponse;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
+import org.json.JSONTokener;
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -143,8 +157,24 @@ public class MainActivity extends AppCompatActivity {
         // Download handling
         webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> handleDownload(url, userAgent, contentDisposition, mimetype));
 
+        webView.addJavascriptInterface(new WebAppInterface(), "AndroidBridge");
+
         // WebViewClient
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                if (request.getUrl() != null) {
+                    String urlStr = request.getUrl().toString();
+                    if (urlStr.contains("googleapis.com/drive/v3/files/") && urlStr.contains("alt=media")) {
+                        WebResourceResponse response = handleDriveMediaDownload(request);
+                        if (response != null) {
+                            return response;
+                        }
+                    }
+                }
+                return super.shouldInterceptRequest(view, request);
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 // Do not intercept subframes (iframes, Firebase auth iframes, scripts, APIs)
@@ -187,6 +217,7 @@ public class MainActivity extends AppCompatActivity {
                 super.onPageFinished(view, url);
                 progressBar.setVisibility(View.GONE);
                 CookieManager.getInstance().flush();
+                injectUiCleaner(view);
             }
         });
 
@@ -195,6 +226,9 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
                 progressBar.setProgress(newProgress);
+                if (newProgress >= 50) {
+                    injectUiCleaner(view);
+                }
                 if (newProgress == 100) {
                     progressBar.setVisibility(View.GONE);
                 }
@@ -246,7 +280,195 @@ public class MainActivity extends AppCompatActivity {
         settings.setBuiltInZoomControls(false);
     }
 
-    // In-app Popup Dialog for Firebase Auth & Google Drive OAuth
+    // Injects UI cleaner into host AI Studio page to remove bottom disclaimer banner,
+    // remove Chat / Preview tabs & options menu, and make the applet iframe occupy 100% full screen
+    private void injectUiCleaner(WebView view) {
+        if (view == null) return;
+        String js = "(function() {" +
+            "if (window.__raddocCleanInjected) {" +
+                "if (typeof window.__raddocClean === 'function') window.__raddocClean();" +
+                "return;" +
+            "}" +
+            "window.__raddocCleanInjected = true;" +
+            "window.__raddocClean = function() {" +
+                "try {" +
+                    "var iframes = document.querySelectorAll('iframe');" +
+                    "for (var i = 0; i < iframes.length; i++) {" +
+                        "var ifr = iframes[i];" +
+                        "if (ifr.offsetWidth > 60 || ifr.offsetHeight > 60 || ifr.getAttribute('sandbox') || (ifr.src && ifr.src.indexOf('usercontent') !== -1)) {" +
+                            "ifr.style.setProperty('position', 'fixed', 'important');" +
+                            "ifr.style.setProperty('top', '0px', 'important');" +
+                            "ifr.style.setProperty('left', '0px', 'important');" +
+                            "ifr.style.setProperty('width', '100vw', 'important');" +
+                            "ifr.style.setProperty('height', '100vh', 'important');" +
+                            "ifr.style.setProperty('max-height', '100vh', 'important');" +
+                            "ifr.style.setProperty('z-index', '99999', 'important');" +
+                            "ifr.style.setProperty('border', 'none', 'important');" +
+                        "}" +
+                    "}" +
+                    "var all = document.querySelectorAll('div, footer, p, span, aside, section');" +
+                    "for (var j = 0; j < all.length; j++) {" +
+                        "var el = all[j];" +
+                        "var txt = el.textContent || '';" +
+                        "if (txt.indexOf('This app was developed by another user') !== -1) {" +
+                            "var p = el;" +
+                            "while (p.parentElement && p.parentElement !== document.body && p.parentElement.offsetHeight < 160) { p = p.parentElement; }" +
+                            "p.style.setProperty('display', 'none', 'important');" +
+                            "p.style.setProperty('visibility', 'hidden', 'important');" +
+                            "p.style.setProperty('height', '0px', 'important');" +
+                        "}" +
+                    "}" +
+                    "var navs = document.querySelectorAll('nav, div, footer, [role=\"tablist\"], [role=\"navigation\"]');" +
+                    "for (var k = 0; k < navs.length; k++) {" +
+                        "var n = navs[k];" +
+                        "var ntxt = n.textContent || '';" +
+                        "if (ntxt.indexOf('Chat') !== -1 && ntxt.indexOf('Preview') !== -1) {" +
+                            "n.style.setProperty('display', 'none', 'important');" +
+                            "n.style.setProperty('visibility', 'hidden', 'important');" +
+                            "n.style.setProperty('height', '0px', 'important');" +
+                        "}" +
+                    "}" +
+                "} catch(e) {}" +
+            "};" +
+            "window.__raddocClean();" +
+            "setInterval(window.__raddocClean, 500);" +
+            "var obs = new MutationObserver(window.__raddocClean);" +
+            "if (document.body) { obs.observe(document.body, { childList: true, subtree: true }); }" +
+            "document.addEventListener('DOMContentLoaded', window.__raddocClean);" +
+        "})();";
+        view.evaluateJavascript(js, null);
+    }
+
+    // Native JavaScript Interface accessible from web context as window.AndroidBridge
+    public class WebAppInterface {
+        @JavascriptInterface
+        public void openHtmlInChrome(String htmlContent, String filename) {
+            runOnUiThread(() -> exportAndOpenInChrome(htmlContent, filename));
+        }
+    }
+
+    public void exportAndOpenInChrome(String htmlContent, String filename) {
+        if (htmlContent == null || htmlContent.trim().isEmpty()) {
+            Toast.makeText(this, "Empty report content", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            String safeName = (filename == null || filename.trim().isEmpty()) ? "Dictation_Report.html" : filename.trim();
+            if (!safeName.toLowerCase().endsWith(".html")) {
+                safeName += ".html";
+            }
+            File reportsDir = new File(getCacheDir(), "reports");
+            if (!reportsDir.exists()) {
+                reportsDir.mkdirs();
+            }
+            File file = new File(reportsDir, safeName);
+            FileOutputStream fos = new FileOutputStream(file);
+            fos.write(htmlContent.getBytes(StandardCharsets.UTF_8));
+            fos.flush();
+            fos.close();
+
+            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
+
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(uri, "text/html");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            // Open in Google Chrome if available
+            intent.setPackage("com.android.chrome");
+            try {
+                startActivity(intent);
+            } catch (ActivityNotFoundException e) {
+                intent.setPackage(null);
+                startActivity(Intent.createChooser(intent, "Open report with..."));
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            Toast.makeText(this, "Error opening report: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private String parseJsonString(String json) {
+        if (json == null || json.equals("null")) return "";
+        try {
+            Object obj = new JSONTokener(json).nextValue();
+            return obj != null ? obj.toString() : "";
+        } catch (Exception e) {
+            if (json.startsWith("\"") && json.endsWith("\"") && json.length() >= 2) {
+                return json.substring(1, json.length() - 1)
+                        .replace("\\\"", "\"")
+                        .replace("\\n", "\n")
+                        .replace("\\r", "\r")
+                        .replace("\\t", "\t")
+                        .replace("\\\\", "\\");
+            }
+            return json;
+        }
+    }
+
+    // Intercept Google Drive media download requests to bypass CORS redirects natively
+    private WebResourceResponse handleDriveMediaDownload(WebResourceRequest request) {
+        String method = request.getMethod();
+        if ("OPTIONS".equalsIgnoreCase(method)) {
+            Map<String, String> headers = new HashMap<>();
+            headers.put("Access-Control-Allow-Origin", "*");
+            headers.put("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+            headers.put("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Origin, X-Requested-With");
+            headers.put("Access-Control-Max-Age", "86400");
+            return new WebResourceResponse("text/plain", "UTF-8", 200, "OK", headers, new ByteArrayInputStream(new byte[0]));
+        }
+
+        try {
+            String targetUrl = request.getUrl().toString();
+            URL u = new URL(targetUrl);
+            HttpURLConnection conn = (HttpURLConnection) u.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            conn.setInstanceFollowRedirects(true);
+
+            Map<String, String> reqHeaders = request.getRequestHeaders();
+            if (reqHeaders != null) {
+                for (Map.Entry<String, String> entry : reqHeaders.entrySet()) {
+                    conn.setRequestProperty(entry.getKey(), entry.getValue());
+                }
+            }
+
+            int code = conn.getResponseCode();
+            int redirectCount = 0;
+            while ((code == HttpURLConnection.HTTP_MOVED_TEMP ||
+                    code == HttpURLConnection.HTTP_MOVED_PERM ||
+                    code == HttpURLConnection.HTTP_SEE_OTHER ||
+                    code == 307) && redirectCount < 5) {
+                String location = conn.getHeaderField("Location");
+                if (location == null) break;
+                conn.disconnect();
+                u = new URL(location);
+                conn = (HttpURLConnection) u.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(30000);
+                conn.setInstanceFollowRedirects(true);
+                code = conn.getResponseCode();
+                redirectCount++;
+            }
+
+            if (code >= 200 && code < 400) {
+                InputStream in = conn.getInputStream();
+                Map<String, String> resHeaders = new HashMap<>();
+                resHeaders.put("Access-Control-Allow-Origin", "*");
+                resHeaders.put("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+                resHeaders.put("Access-Control-Allow-Headers", "*");
+                resHeaders.put("Content-Type", "text/html; charset=UTF-8");
+                return new WebResourceResponse("text/html", "UTF-8", 200, "OK", resHeaders, in);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    // In-app Popup Dialog for Firebase Auth, Google Drive OAuth & Report Preview
     @SuppressLint("SetJavaScriptEnabled")
     private boolean createPopupWindow(Message resultMsg) {
         final Dialog dialog = new Dialog(MainActivity.this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
@@ -255,20 +477,27 @@ public class MainActivity extends AppCompatActivity {
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setBackgroundColor(Color.parseColor("#121212"));
 
-        // Header bar with Close button
+        // Header bar
         LinearLayout header = new LinearLayout(MainActivity.this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setBackgroundColor(Color.parseColor("#1E1F20"));
-        int pad = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 12, getResources().getDisplayMetrics());
+        int pad = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 10, getResources().getDisplayMetrics());
         header.setPadding(pad, pad, pad, pad);
         header.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView title = new TextView(MainActivity.this);
-        title.setText("Google Drive Authorization");
+        final TextView title = new TextView(MainActivity.this);
+        title.setText("Authorization / Report");
         title.setTextColor(Color.WHITE);
-        title.setTextSize(16);
+        title.setTextSize(15);
         LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
         header.addView(title, titleParams);
+
+        final Button openInChromeBtn = new Button(MainActivity.this);
+        openInChromeBtn.setText("🌐 Open in Chrome");
+        openInChromeBtn.setTextColor(Color.parseColor("#38BDF8"));
+        openInChromeBtn.setBackgroundColor(Color.TRANSPARENT);
+        openInChromeBtn.setVisibility(View.GONE);
+        header.addView(openInChromeBtn);
 
         Button closeBtn = new Button(MainActivity.this);
         closeBtn.setText("✕ Close");
@@ -283,10 +512,26 @@ public class MainActivity extends AppCompatActivity {
         WebSettings pSettings = popupWebView.getSettings();
         configureCommonSettings(pSettings);
         pSettings.setUserAgentString(chromeUserAgent);
+        pSettings.setSupportZoom(true);
+        pSettings.setBuiltInZoomControls(true);
+        pSettings.setDisplayZoomControls(false);
 
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
         cookieManager.setAcceptThirdPartyCookies(popupWebView, true);
+
+        popupWebView.addJavascriptInterface(new WebAppInterface(), "AndroidBridge");
+
+        openInChromeBtn.setOnClickListener(v -> {
+            popupWebView.evaluateJavascript("(function(){ return document.documentElement.outerHTML; })();", value -> {
+                String html = parseJsonString(value);
+                if (html != null && !html.isEmpty()) {
+                    exportAndOpenInChrome(html, "Dictation_Report.html");
+                } else {
+                    Toast.makeText(MainActivity.this, "Could not extract report HTML", Toast.LENGTH_SHORT).show();
+                }
+            });
+        });
 
         popupWebView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -300,17 +545,31 @@ public class MainActivity extends AppCompatActivity {
 
         popupWebView.setWebViewClient(new WebViewClient() {
             @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                if (request.getUrl() != null) {
+                    String urlStr = request.getUrl().toString();
+                    if (urlStr.contains("googleapis.com/drive/v3/files/") && urlStr.contains("alt=media")) {
+                        WebResourceResponse response = handleDriveMediaDownload(request);
+                        if (response != null) {
+                            return response;
+                        }
+                    }
+                }
+                return super.shouldInterceptRequest(view, request);
+            }
+
+            @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
                 if (!req.isForMainFrame()) {
                     return false;
                 }
-                return handlePopupUrl(dialog, req.getUrl().toString());
+                return handlePopupUrl(dialog, req.getUrl().toString(), title, openInChromeBtn);
             }
 
             @SuppressWarnings("deprecation")
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, String url) {
-                return handlePopupUrl(dialog, url);
+                return handlePopupUrl(dialog, url, title, openInChromeBtn);
             }
 
             @Override
@@ -322,8 +581,15 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView v, String url) {
                 super.onPageFinished(v, url);
                 CookieManager.getInstance().flush();
+                if (url != null && (url.startsWith("blob:") || url.contains(".html") || url.contains("dictation"))) {
+                    title.setText("Dictation Report");
+                    openInChromeBtn.setVisibility(View.VISIBLE);
+                } else if (url != null && (url.contains("accounts.google") || url.contains("signin") || url.contains("oauth") || url.contains("firebaseapp"))) {
+                    title.setText("Google Sign-In");
+                    openInChromeBtn.setVisibility(View.GONE);
+                }
                 // When OAuth reaches approval, close_window, or success callback, auto-dismiss
-                if (url.contains("oauth2/approval") || url.contains("close_window") || url.contains("success")) {
+                if (url != null && (url.contains("oauth2/approval") || url.contains("close_window") || url.contains("success"))) {
                     v.postDelayed(() -> {
                         try {
                             dialog.dismiss();
@@ -351,19 +617,26 @@ public class MainActivity extends AppCompatActivity {
         return true;
     }
 
-    private boolean handlePopupUrl(Dialog dialog, String url) {
+    private boolean handlePopupUrl(Dialog dialog, String url, TextView titleView, Button chromeBtn) {
         if (url == null || url.isEmpty() || url.equals("about:blank")) {
             return false;
         }
 
-        // Custom schemes (intent:, tg:, mailto:, etc.)
+        // 1. Report / Blob URLs: render directly in popupWebView!
+        if (url.startsWith("blob:") || url.startsWith("data:text/html")) {
+            if (titleView != null) titleView.setText("Dictation Report");
+            if (chromeBtn != null) chromeBtn.setVisibility(View.VISIBLE);
+            return false;
+        }
+
+        // 2. Custom schemes (intent:, tg:, mailto:, etc.)
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             handleCustomScheme(url);
             dialog.dismiss();
             return true;
         }
 
-        // External Telegram link
+        // 3. External Telegram link
         if (url.contains("t.me") || url.contains("telegram.me")) {
             try {
                 Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
@@ -373,8 +646,18 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception ignored) {}
         }
 
+        // 4. Update title based on URL
+        if (titleView != null) {
+            if (url.contains("accounts.google") || url.contains("signin") || url.contains("oauth") || url.contains("firebaseapp")) {
+                titleView.setText("Google Sign-In");
+                if (chromeBtn != null) chromeBtn.setVisibility(View.GONE);
+            } else if (url.contains(".html") || url.contains("dictation")) {
+                titleView.setText("Dictation Report");
+                if (chromeBtn != null) chromeBtn.setVisibility(View.VISIBLE);
+            }
+        }
+
         // ALL auth, Firebase handler, and Google domains MUST stay inside the popup!
-        // NEVER send Firebase auth to external Chrome to prevent "missing initial state" error!
         return false;
     }
 

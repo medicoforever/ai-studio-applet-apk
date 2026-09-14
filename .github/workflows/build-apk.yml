@@ -46,17 +46,15 @@ jobs:
       - name: Create GitHub Release with APK Downloads
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.5
-          name: "RADDOC's Dictation App v1.0.5 (Blank Screen & OAuth Fix)"
+          tag_name: v1.0.6
+          name: "RADDOC's Dictation App v1.0.6 (Firebase Auth & Drive Fix)"
           body: |
-            ## RADDOC's Dictation App v1.0.5
+            ## RADDOC's Dictation App v1.0.6
             Target URL: `https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true`
             
-            ### Fixes in v1.0.5:
-            - **Fixed Blank Screen**: Added subframe pass-through so the sandboxed applet iframe, scripts, and components load without interference.
-            - **Fixed Google Sign-In Cancellation**: Fixed URL matcher so Google Sign-in URLs do not trigger false-positive editor redirections.
-            - **Hardware Acceleration Enabled**: Accelerated graphics and WebView rendering on all devices.
-            - **Google Drive OAuth Dialog**: In-app authorization dialog with `window.opener` persistence for Google Drive sync.
+            ### Fixes in v1.0.6:
+            - **Fixed Firebase Auth "Missing Initial State" Error**: Included `firebaseapp.com`, `web.app`, and Firebase OAuth handler domains in the in-app container so `sessionStorage` is never lost by being kicked out to external Chrome.
+            - **Complete In-App Google Drive Sync**: Seamless flow for Google Drive connection, token exchange, and file picker.
             - **Maintained 24/7 Keep-Alive**: Background Foreground Service and WakeLock remain active.
           files: final_apk/*
         env:

@@ -147,9 +147,7 @@ public class MainActivity extends AppCompatActivity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                // CRITICAL FIX FOR BLANK SCREEN:
-                // If this is a subframe (e.g. the applet iframe, scripts, APIs, or auth components),
-                // NEVER intercept it! Let the WebView load the internal applet components directly!
+                // Do not intercept subframes (iframes, Firebase auth iframes, scripts, APIs)
                 if (!request.isForMainFrame()) {
                     return false;
                 }
@@ -188,6 +186,7 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 progressBar.setVisibility(View.GONE);
+                CookieManager.getInstance().flush();
             }
         });
 
@@ -223,7 +222,7 @@ public class MainActivity extends AppCompatActivity {
                 return true;
             }
 
-            // Handles Google Drive OAuth / Popups cleanly without destroying main applet
+            // CRITICAL: Handle Firebase Auth & Google Drive Popups inside the in-app dialog
             @Override
             public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
                 return createPopupWindow(resultMsg);
@@ -247,6 +246,7 @@ public class MainActivity extends AppCompatActivity {
         settings.setBuiltInZoomControls(false);
     }
 
+    // In-app Popup Dialog for Firebase Auth & Google Drive OAuth
     @SuppressLint("SetJavaScriptEnabled")
     private boolean createPopupWindow(Message resultMsg) {
         final Dialog dialog = new Dialog(MainActivity.this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
@@ -284,7 +284,9 @@ public class MainActivity extends AppCompatActivity {
         configureCommonSettings(pSettings);
         pSettings.setUserAgentString(chromeUserAgent);
 
-        CookieManager.getInstance().setAcceptThirdPartyCookies(popupWebView, true);
+        CookieManager cookieManager = CookieManager.getInstance();
+        cookieManager.setAcceptCookie(true);
+        cookieManager.setAcceptThirdPartyCookies(popupWebView, true);
 
         popupWebView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -319,7 +321,8 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPageFinished(WebView v, String url) {
                 super.onPageFinished(v, url);
-                // When OAuth reaches approval, close window, or success, auto-dismiss
+                CookieManager.getInstance().flush();
+                // When OAuth reaches approval, close_window, or success callback, auto-dismiss
                 if (url.contains("oauth2/approval") || url.contains("close_window") || url.contains("success")) {
                     v.postDelayed(() -> {
                         try {
@@ -353,27 +356,26 @@ public class MainActivity extends AppCompatActivity {
             return false;
         }
 
+        // Custom schemes (intent:, tg:, mailto:, etc.)
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             handleCustomScheme(url);
             dialog.dismiss();
             return true;
         }
 
-        // Keep Google Auth and app callback inside popup
-        if (isInternalUrl(url)) {
-            return false;
+        // External Telegram link
+        if (url.contains("t.me") || url.contains("telegram.me")) {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                startActivity(intent);
+                dialog.dismiss();
+                return true;
+            } catch (Exception ignored) {}
         }
 
-        // External URLs open in browser / app
-        try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
-            dialog.dismiss();
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
+        // ALL auth, Firebase handler, and Google domains MUST stay inside the popup!
+        // NEVER send Firebase auth to external Chrome to prevent "missing initial state" error!
+        return false;
     }
 
     private boolean handleMainUrlLoading(WebView view, String url) {
@@ -385,9 +387,7 @@ public class MainActivity extends AppCompatActivity {
         String host = uri.getHost() != null ? uri.getHost().toLowerCase() : "";
         String path = uri.getPath() != null ? uri.getPath() : "";
 
-        // 1. STRICT REMIX/EDITOR PROTECTION:
-        // ONLY trigger if the target host is actually ai.studio / aistudio.google.com and on the applet path
-        // DO NOT trigger if this is Google sign-in (accounts.google.com)!
+        // 1. Strict editor protection (only on ai.studio/apps/<id> without fullscreen)
         if ((host.equals("ai.studio") || host.equals("aistudio.google.com")) && path.contains("3f0807e3-2494-4289-a3a6-c12032da731c")) {
             String query = uri.getQuery();
             if (query == null || !query.contains("fullscreenApplet=true")) {
@@ -402,20 +402,33 @@ public class MainActivity extends AppCompatActivity {
             return true;
         }
 
-        // 3. Keep Google Sign-in and AI Studio inside WebView
+        // 3. Keep internal URLs, Firebase Auth, Google Auth, and Drive Picker inside WebView
         if (isInternalUrl(url)) {
             return false;
         }
 
-        // 4. External URLs (Google Drive website, Telegram, Google Docs, etc.)
-        try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
-            return true;
-        } catch (Exception e) {
-            return false;
+        // 4. External Telegram link
+        if (url.contains("t.me") || url.contains("telegram.me")) {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                startActivity(intent);
+                return true;
+            } catch (Exception ignored) {}
         }
+
+        // 5. External Drive folder link (e.g. drive.google.com/drive/folders/...)
+        if (url.contains("drive.google.com") && !url.contains("picker")) {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                startActivity(intent);
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        // Default: stay inside WebView
+        return false;
     }
 
     private boolean isInternalUrl(String url) {
@@ -423,6 +436,10 @@ public class MainActivity extends AppCompatActivity {
         String lower = url.toLowerCase();
         return lower.contains("ai.studio") ||
                lower.contains("aistudio.google.com") ||
+               lower.contains("firebaseapp.com") ||
+               lower.contains("web.app") ||
+               lower.contains("firebase") ||
+               lower.contains("identitytoolkit") ||
                lower.contains("accounts.google.com") ||
                lower.contains("accounts.youtube.com") ||
                lower.contains("myaccount.google.com") ||
@@ -430,6 +447,8 @@ public class MainActivity extends AppCompatActivity {
                lower.contains("gstatic.com") ||
                lower.contains("googleusercontent.com") ||
                lower.contains("usercontent.goog") ||
+               lower.contains("picker") ||
+               lower.contains("oauth") ||
                lower.contains("/signin") ||
                lower.contains("servicelogin");
     }

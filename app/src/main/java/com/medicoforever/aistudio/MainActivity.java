@@ -210,6 +210,9 @@ public class MainActivity extends AppCompatActivity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 progressBar.setVisibility(View.VISIBLE);
+                if (url != null && (url.contains("ai.studio") || url.contains("aistudio.google.com")) && !url.contains("accounts.google")) {
+                    injectEarlyProtections(view);
+                }
             }
 
             @Override
@@ -218,6 +221,7 @@ public class MainActivity extends AppCompatActivity {
                 progressBar.setVisibility(View.GONE);
                 CookieManager.getInstance().flush();
                 if (url != null && (url.contains("ai.studio") || url.contains("aistudio.google.com")) && !url.contains("accounts.google")) {
+                    injectEarlyProtections(view);
                     injectUiCleaner(view);
                 }
             }
@@ -229,7 +233,8 @@ public class MainActivity extends AppCompatActivity {
             public void onProgressChanged(WebView view, int newProgress) {
                 progressBar.setProgress(newProgress);
                 String currentUrl = view.getUrl();
-                if (newProgress >= 60 && currentUrl != null && (currentUrl.contains("ai.studio") || currentUrl.contains("aistudio.google.com")) && !currentUrl.contains("accounts.google")) {
+                if (newProgress >= 40 && currentUrl != null && (currentUrl.contains("ai.studio") || currentUrl.contains("aistudio.google.com")) && !currentUrl.contains("accounts.google")) {
+                    injectEarlyProtections(view);
                     injectUiCleaner(view);
                 }
                 if (newProgress == 100) {
@@ -283,8 +288,85 @@ public class MainActivity extends AppCompatActivity {
         settings.setBuiltInZoomControls(false);
     }
 
+    // Injects early error suppression and history protection to prevent AI Studio
+    // from detecting errors and switching the view away from the Preview applet
+    private void injectEarlyProtections(WebView view) {
+        if (view == null) return;
+        String currentUrl = view.getUrl();
+        if (currentUrl == null || (!currentUrl.contains("ai.studio") && !currentUrl.contains("aistudio.google.com"))) {
+            return;
+        }
+        if (currentUrl.contains("accounts.google") || currentUrl.contains("signin") || currentUrl.contains("oauth")) {
+            return;
+        }
+
+        String js = "(function() {" +
+            "try {" +
+                "if (!window.location.hostname.includes('ai.studio')) return;" +
+                "if (window.__raddocEarlyInjected) return;" +
+                "window.__raddocEarlyInjected = true;" +
+
+                // 1. Intercept and stop propagation of error & unhandledrejection in capturing phase
+                "window.addEventListener('error', function(e) {" +
+                    "e.stopImmediatePropagation();" +
+                "}, true);" +
+                "window.addEventListener('unhandledrejection', function(e) {" +
+                    "e.stopImmediatePropagation();" +
+                "}, true);" +
+
+                // 2. Override window.onerror and onunhandledrejection
+                "try {" +
+                    "window.onerror = function() { return true; };" +
+                    "window.onunhandledrejection = function() { return true; };" +
+                "} catch(e) {}" +
+
+                // 3. Intercept postMessage error dispatches that tell host AI Studio to switch to Chat
+                "window.addEventListener('message', function(e) {" +
+                    "try {" +
+                        "if (!e || !e.data) return;" +
+                        "var d = e.data;" +
+                        "var isErr = false;" +
+                        "if (typeof d === 'string') {" +
+                            "var s = d.toLowerCase();" +
+                            "if (s.includes('\"error\"') || s.includes('switchtochat') || s.includes('view_chat')) isErr = true;" +
+                        "} else if (typeof d === 'object') {" +
+                            "var t = String(d.type || d.action || d.event || d.kind || '').toLowerCase();" +
+                            "if (t.includes('error') || t.includes('reject') || t.includes('fail') || t.includes('crash') || t.includes('chat')) isErr = true;" +
+                            "if (d.isError === true || d.hasError === true) isErr = true;" +
+                        "}" +
+                        "if (isErr) {" +
+                            "e.stopImmediatePropagation();" +
+                            "e.stopPropagation();" +
+                        "}" +
+                    "} catch(ex) {}" +
+                "}, true);" +
+
+                // 4. Hook history.pushState and history.replaceState to never drop fullscreenApplet=true
+                "try {" +
+                    "var _ps = history.pushState;" +
+                    "history.pushState = function(state, title, url) {" +
+                        "if (url && typeof url === 'string' && url.indexOf('fullscreenApplet') === -1 && window.location.hostname.includes('ai.studio')) {" +
+                            "var sep = url.indexOf('?') !== -1 ? '&' : '?';" +
+                            "url = url + sep + 'fullscreenApplet=true';" +
+                        "}" +
+                        "return _ps.call(this, state, title, url);" +
+                    "};" +
+                    "var _rs = history.replaceState;" +
+                    "history.replaceState = function(state, title, url) {" +
+                        "if (url && typeof url === 'string' && url.indexOf('fullscreenApplet') === -1 && window.location.hostname.includes('ai.studio')) {" +
+                            "var sep = url.indexOf('?') !== -1 ? '&' : '?';" +
+                            "url = url + sep + 'fullscreenApplet=true';" +
+                        "}" +
+                        "return _rs.call(this, state, title, url);" +
+                    "};" +
+                "} catch(ex) {}" +
+            "} catch(err) {}" +
+        "})();";
+        view.evaluateJavascript(js, null);
+    }
+
     // Injects UI cleaner into host AI Studio page to remove bottom disclaimer banner,
-    // remove Chat / Preview tabs & options menu, WITHOUT touching iframes or sign-in pages
+    // enforce Preview tab visibility, and hide Chat UI & options menu
     private void injectUiCleaner(WebView view) {
         if (view == null) return;
         String currentUrl = view.getUrl();
@@ -305,6 +387,8 @@ public class MainActivity extends AppCompatActivity {
             "window.__raddocClean = function() {" +
                 "try {" +
                     "if (!window.location.hostname.includes('ai.studio')) return;" +
+
+                    // 1. Hide 'This app was developed by another user' disclaimer banner
                     "var all = document.querySelectorAll('div, footer, p, span, aside, section');" +
                     "for (var j = 0; j < all.length; j++) {" +
                         "var el = all[j];" +
@@ -317,16 +401,61 @@ public class MainActivity extends AppCompatActivity {
                             "p.style.setProperty('height', '0px', 'important');" +
                         "}" +
                     "}" +
+
+                    // 2. ENFORCE PREVIEW TAB: Automatically click 'Preview' tab whenever Chat becomes active or on error
+                    "var tabs = document.querySelectorAll('button, [role=\"tab\"], [role=\"button\"], a, div');" +
+                    "var previewBtn = null;" +
+                    "var chatBtn = null;" +
+                    "for (var t = 0; t < tabs.length; t++) {" +
+                        "var tab = tabs[t];" +
+                        "var ttxt = (tab.textContent || '').trim();" +
+                        "var aria = tab.getAttribute('aria-label') || '';" +
+                        "var role = tab.getAttribute('role') || '';" +
+                        "if (role === 'tab' || tab.tagName === 'BUTTON' || aria === 'Preview' || aria === 'Chat') {" +
+                            "if (ttxt === 'Preview' || aria === 'Preview') {" +
+                                "previewBtn = tab;" +
+                            "} else if (ttxt === 'Chat' || aria === 'Chat') {" +
+                                "chatBtn = tab;" +
+                            "}" +
+                        "}" +
+                    "}" +
+
+                    "if (previewBtn) {" +
+                        "var isChatActive = chatBtn && (" +
+                            "chatBtn.getAttribute('aria-selected') === 'true' || " +
+                            "chatBtn.classList.contains('active') || " +
+                            "chatBtn.classList.contains('selected') || " +
+                            "chatBtn.classList.contains('mdc-tab--active')" +
+                        ");" +
+                        "var isPreviewActive = (" +
+                            "previewBtn.getAttribute('aria-selected') === 'true' || " +
+                            "previewBtn.classList.contains('active') || " +
+                            "previewBtn.classList.contains('selected') || " +
+                            "previewBtn.classList.contains('mdc-tab--active')" +
+                        ");" +
+                        "if (isChatActive || !isPreviewActive) {" +
+                            "previewBtn.click();" +
+                        "}" +
+                    "}" +
+
+                    // 3. Move navigation bar offscreen rather than 'display: none' so programmatic clicks remain 100% active
                     "var navs = document.querySelectorAll('nav, div, footer, [role=\"tablist\"], [role=\"navigation\"]');" +
                     "for (var k = 0; k < navs.length; k++) {" +
                         "var n = navs[k];" +
                         "var ntxt = n.textContent || '';" +
                         "if (ntxt.indexOf('Chat') !== -1 && ntxt.indexOf('Preview') !== -1) {" +
-                            "n.style.setProperty('display', 'none', 'important');" +
-                            "n.style.setProperty('visibility', 'hidden', 'important');" +
-                            "n.style.setProperty('height', '0px', 'important');" +
+                            "n.style.setProperty('position', 'fixed', 'important');" +
+                            "n.style.setProperty('top', '-9999px', 'important');" +
+                            "n.style.setProperty('left', '-9999px', 'important');" +
+                            "n.style.setProperty('opacity', '0', 'important');" +
+                            "n.style.setProperty('pointer-events', 'none', 'important');" +
+                            "n.style.setProperty('width', '1px', 'important');" +
+                            "n.style.setProperty('height', '1px', 'important');" +
+                            "n.style.setProperty('overflow', 'hidden', 'important');" +
                         "}" +
                     "}" +
+
+                    // 4. Hide '...' more options menu button
                     "var btns = document.querySelectorAll('button, [role=\"button\"]');" +
                     "for (var b = 0; b < btns.length; b++) {" +
                         "var btn = btns[b];" +
@@ -335,16 +464,39 @@ public class MainActivity extends AppCompatActivity {
                         "if (btxt === '...' || aria === 'More' || aria === 'More options') {" +
                             "var bar = btn.closest('nav, [role=\"tablist\"], div');" +
                             "if (bar && bar !== document.body && bar.offsetHeight < 80) {" +
-                                "bar.style.setProperty('display', 'none', 'important');" +
+                                "bar.style.setProperty('position', 'fixed', 'important');" +
+                                "bar.style.setProperty('top', '-9999px', 'important');" +
+                                "bar.style.setProperty('left', '-9999px', 'important');" +
+                                "bar.style.setProperty('opacity', '0', 'important');" +
+                                "bar.style.setProperty('pointer-events', 'none', 'important');" +
                             "}" +
                         "}" +
+                    "}" +
+
+                    // 5. Hide Chat editor panels if they ever render
+                    "var chatPanels = document.querySelectorAll('[class*=\"chat-container\"], [class*=\"chat_container\"], [class*=\"prompt-editor\"], [class*=\"conversation-view\"]');" +
+                    "for (var c = 0; c < chatPanels.length; c++) {" +
+                        "chatPanels[c].style.setProperty('display', 'none', 'important');" +
+                    "}" +
+
+                    // 6. Ensure fullscreenApplet=true query is preserved in URL
+                    "if (window.location.pathname.includes('3f0807e3-2494-4289-a3a6-c12032da731c') && !window.location.search.includes('fullscreenApplet=true')) {" +
+                        "try {" +
+                            "var u = new URL(window.location.href);" +
+                            "u.searchParams.set('fullscreenApplet', 'true');" +
+                            "window.history.replaceState(null, '', u.toString());" +
+                        "} catch(e) {}" +
                     "}" +
                 "} catch(e) {}" +
             "};" +
             "window.__raddocClean();" +
-            "setInterval(window.__raddocClean, 600);" +
-            "var obs = new MutationObserver(window.__raddocClean);" +
-            "if (document.body) { obs.observe(document.body, { childList: true, subtree: true }); }" +
+            "if (!window.__raddocInterval) {" +
+                "window.__raddocInterval = setInterval(window.__raddocClean, 150);" +
+            "}" +
+            "if (!window.__raddocObserver && document.body) {" +
+                "window.__raddocObserver = new MutationObserver(window.__raddocClean);" +
+                "window.__raddocObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'aria-selected'] });" +
+            "}" +
             "document.addEventListener('DOMContentLoaded', window.__raddocClean);" +
         "})();";
         view.evaluateJavascript(js, null);
@@ -681,8 +833,12 @@ public class MainActivity extends AppCompatActivity {
         String host = uri.getHost() != null ? uri.getHost().toLowerCase() : "";
         String path = uri.getPath() != null ? uri.getPath() : "";
 
-        // 1. Strict editor protection (only on ai.studio/apps/<id> without fullscreen)
-        if ((host.equals("ai.studio") || host.equals("aistudio.google.com")) && path.contains("3f0807e3-2494-4289-a3a6-c12032da731c")) {
+        // 1. Strict editor protection (lock to fullscreen applet on ai.studio)
+        if (host.equals("ai.studio") || host.equals("aistudio.google.com")) {
+            if (!path.contains("3f0807e3-2494-4289-a3a6-c12032da731c")) {
+                view.loadUrl(TARGET_URL);
+                return true;
+            }
             String query = uri.getQuery();
             if (query == null || !query.contains("fullscreenApplet=true")) {
                 view.loadUrl(TARGET_URL);
@@ -839,6 +995,13 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        String currentUrl = webView.getUrl();
+        if (currentUrl != null && (currentUrl.contains("ai.studio") || currentUrl.contains("aistudio.google.com"))) {
+            if (!currentUrl.contains("fullscreenApplet=true") || !currentUrl.contains("3f0807e3-2494-4289-a3a6-c12032da731c")) {
+                webView.loadUrl(TARGET_URL);
+                return;
+            }
+        }
         if (webView.canGoBack()) {
             webView.goBack();
         } else {

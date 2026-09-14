@@ -46,17 +46,18 @@ jobs:
       - name: Create GitHub Release with APK Downloads
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.2
-          name: "RADDOC's Dictation App v1.0.2"
+          tag_name: v1.0.3
+          name: "RADDOC's Dictation App v1.0.3 (Link Redirection Fix)"
           body: |
-            ## RADDOC's Dictation App v1.0.2
+            ## RADDOC's Dictation App v1.0.3
             Target URL: `https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true`
             
-            ### Branding & Icon Updates:
-            - **App Name**: Renamed to **RADDOC's dictation app**.
-            - **Logo / Icon**: Yin Yang black and white design applied across all launcher densities and adaptive icons.
-            - **Smooth Scrolling**: Native bi-directional scrolling with zero gesture locks.
-            - **Keep-Alive**: Background Foreground Service and WakeLock enabled.
+            ### Fixes in v1.0.3:
+            - **Fixed Link Redirection Errors**: Handled `target="_blank"`, popup windows, and external links so they launch seamlessly in the phone's default browser instead of failing with WebView errors.
+            - **Custom Scheme Support**: Added support for `intent://`, `mailto:`, `tel:`, and app links.
+            - **File Downloads & Exports**: Integrated `DownloadListener` so dictated text and audio exports download smoothly to the device's Downloads folder.
+            - **File Upload Chooser**: Added file picker support for uploading audio/documents.
+            - **Maintained 24/7 Keep-Alive**: Background Foreground Service and WakeLock remain active.
           files: final_apk/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

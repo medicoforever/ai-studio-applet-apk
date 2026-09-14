@@ -46,16 +46,18 @@ jobs:
       - name: Create GitHub Release with APK Downloads
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.6
-          name: "RADDOC's Dictation App v1.0.6 (Firebase Auth & Drive Fix)"
+          tag_name: v1.0.7
+          name: "RADDOC's Dictation App v1.0.7 (Report View & Drive Findings Fix)"
           body: |
-            ## RADDOC's Dictation App v1.0.6
+            ## RADDOC's Dictation App v1.0.7
             Target URL: `https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true`
             
-            ### Fixes in v1.0.6:
-            - **Fixed Firebase Auth "Missing Initial State" Error**: Included `firebaseapp.com`, `web.app`, and Firebase OAuth handler domains in the in-app container so `sessionStorage` is never lost by being kicked out to external Chrome.
-            - **Complete In-App Google Drive Sync**: Seamless flow for Google Drive connection, token exchange, and file picker.
-            - **Maintained 24/7 Keep-Alive**: Background Foreground Service and WakeLock remain active.
+            ### Fixes in v1.0.7:
+            - **Native Google Drive Media Download & CORS Bypass**: Intercepted Google Drive `alt=media` API download requests directly in native Android code to completely bypass CORS redirect blockage on `googleusercontent.com`.
+            - **"Load in App" (✏️) Fixed**: Dictation findings now import immediately into the editor when clicking the pencil button on saved cloud reports.
+            - **"Open in Chrome" (🌐) Fixed**: Implemented `FileProvider` and `AndroidBridge` allowing HTML reports to launch directly into Google Chrome as standalone interactive files.
+            - **In-App Report Viewer**: When viewing reports in-app, `blob:` URLs render full-screen with interactive controls and a top-bar "Open in Chrome" button.
+            - **Preserved 24/7 Keep-Alive & Firebase Auth**: Foreground Service, WakeLock, and seamless Firebase Auth remain fully enabled.
           files: final_apk/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

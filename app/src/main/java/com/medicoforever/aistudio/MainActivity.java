@@ -2,11 +2,13 @@ package com.medicoforever.aistudio;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.app.Dialog;
 import android.app.DownloadManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -14,7 +16,10 @@ import android.os.Environment;
 import android.os.Message;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
 import android.webkit.URLUtil;
@@ -25,7 +30,10 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Button;
+import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.TextView;
 import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
@@ -43,6 +51,7 @@ public class MainActivity extends AppCompatActivity {
     private WebView webView;
     private ProgressBar progressBar;
     private ValueCallback<Uri[]> filePathCallback;
+    private String chromeUserAgent;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -115,73 +124,34 @@ public class MainActivity extends AppCompatActivity {
         webView.setHorizontalScrollBarEnabled(false);
 
         WebSettings settings = webView.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
-        settings.setAllowFileAccess(true);
-        settings.setAllowContentAccess(true);
-        settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        settings.setSupportMultipleWindows(true);
-        settings.setJavaScriptCanOpenWindowsAutomatically(true);
-        settings.setUseWideViewPort(true);
-        settings.setLoadWithOverviewMode(true);
-        settings.setSupportZoom(false);
-        settings.setBuiltInZoomControls(false);
+        configureCommonSettings(settings);
 
         // Bypass Google disallowed_useragent
         String originalUA = settings.getUserAgentString();
-        String chromeUA = originalUA.replace("; wv", "").replaceAll("Version/[0-9.]+\\s*", "");
-        if (!chromeUA.contains("Chrome/")) {
-            chromeUA = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36";
+        chromeUserAgent = originalUA.replace("; wv", "").replaceAll("Version/[0-9.]+\\s*", "");
+        if (!chromeUserAgent.contains("Chrome/")) {
+            chromeUserAgent = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36";
         }
-        settings.setUserAgentString(chromeUA);
+        settings.setUserAgentString(chromeUserAgent);
 
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
         cookieManager.setAcceptThirdPartyCookies(webView, true);
 
-        // Download handling for file exports, audio files, docs
-        webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> {
-            try {
-                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(intent);
-            } catch (Exception e) {
-                try {
-                    DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-                    request.setMimeType(mimetype);
-                    String cookies = CookieManager.getInstance().getCookie(url);
-                    request.addRequestHeader("cookie", cookies);
-                    request.addRequestHeader("User-Agent", userAgent);
-                    request.setDescription("Downloading file...");
-                    String filename = URLUtil.guessFileName(url, contentDisposition, mimetype);
-                    request.setTitle(filename);
-                    request.allowScanningByMediaScanner();
-                    request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                    request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, filename);
-                    DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-                    if (dm != null) {
-                        dm.enqueue(request);
-                        Toast.makeText(getApplicationContext(), "Downloading " + filename, Toast.LENGTH_SHORT).show();
-                    }
-                } catch (Exception ex) {
-                    ex.printStackTrace();
-                }
-            }
-        });
+        // Download handling
+        webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> handleDownload(url, userAgent, contentDisposition, mimetype));
 
-        // WebViewClient to route URLs accurately
+        // WebViewClient
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                return handleUrlLoading(request.getUrl().toString());
+                return handleMainUrlLoading(view, request.getUrl().toString());
             }
 
             @SuppressWarnings("deprecation")
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                return handleUrlLoading(url);
+                return handleMainUrlLoading(view, url);
             }
 
             @Override
@@ -208,7 +178,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // WebChromeClient for permissions, popups, and file uploads
+        // WebChromeClient
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
@@ -240,39 +210,191 @@ public class MainActivity extends AppCompatActivity {
                 return true;
             }
 
-            // Route popup windows (target="_blank" or window.open) cleanly
+            // CRITICAL: Handle Popups / Google OAuth Dialogs properly so window.opener is preserved!
             @Override
             public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
-                WebView.HitTestResult result = view.getHitTestResult();
-                String url = result.getExtra();
-
-                if (url != null && !url.isEmpty()) {
-                    openUrlProperly(url);
-                    return false;
-                }
-
-                WebView tempWebView = new WebView(MainActivity.this);
-                tempWebView.setWebViewClient(new WebViewClient() {
-                    @Override
-                    public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
-                        openUrlProperly(req.getUrl().toString());
-                        return true;
-                    }
-
-                    @SuppressWarnings("deprecation")
-                    @Override
-                    public boolean shouldOverrideUrlLoading(WebView v, String u) {
-                        openUrlProperly(u);
-                        return true;
-                    }
-                });
-
-                WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
-                transport.setWebView(tempWebView);
-                resultMsg.sendToTarget();
-                return true;
+                return createPopupWindow(resultMsg);
             }
         });
+    }
+
+    private void configureCommonSettings(WebSettings settings) {
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
+        settings.setAllowFileAccess(true);
+        settings.setAllowContentAccess(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        settings.setSupportMultipleWindows(true);
+        settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(true);
+        settings.setSupportZoom(false);
+        settings.setBuiltInZoomControls(false);
+    }
+
+    // Handles Popups (Google Drive OAuth, Google Sign-in dialogs, Google Picker)
+    @SuppressLint("SetJavaScriptEnabled")
+    private boolean createPopupWindow(Message resultMsg) {
+        final Dialog dialog = new Dialog(MainActivity.this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+
+        LinearLayout layout = new LinearLayout(MainActivity.this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setBackgroundColor(Color.parseColor("#121212"));
+
+        // Header bar
+        LinearLayout header = new LinearLayout(MainActivity.this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setBackgroundColor(Color.parseColor("#1E1F20"));
+        int pad = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 12, getResources().getDisplayMetrics());
+        header.setPadding(pad, pad, pad, pad);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView title = new TextView(MainActivity.this);
+        title.setText("Google Drive Authorization");
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(16);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        header.addView(title, titleParams);
+
+        Button closeBtn = new Button(MainActivity.this);
+        closeBtn.setText("✕ Close");
+        closeBtn.setTextColor(Color.WHITE);
+        closeBtn.setBackgroundColor(Color.TRANSPARENT);
+        closeBtn.setOnClickListener(v -> dialog.dismiss());
+        header.addView(closeBtn);
+
+        layout.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final WebView popupWebView = new WebView(MainActivity.this);
+        WebSettings pSettings = popupWebView.getSettings();
+        configureCommonSettings(pSettings);
+        pSettings.setUserAgentString(chromeUserAgent);
+
+        CookieManager.getInstance().setAcceptThirdPartyCookies(popupWebView, true);
+
+        popupWebView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onCloseWindow(WebView window) {
+                try {
+                    dialog.dismiss();
+                    window.destroy();
+                } catch (Exception ignored) {}
+            }
+        });
+
+        popupWebView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
+                return handlePopupUrl(dialog, req.getUrl().toString());
+            }
+
+            @SuppressWarnings("deprecation")
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView v, String url) {
+                return handlePopupUrl(dialog, url);
+            }
+
+            @Override
+            public void onPageFinished(WebView v, String url) {
+                super.onPageFinished(v, url);
+                // If the OAuth flow finished and reached success or blank, dismiss after brief delay
+                if (url.contains("oauth2/approval") || url.contains("close_window") || url.contains("success")) {
+                    v.postDelayed(() -> {
+                        try {
+                            dialog.dismiss();
+                            v.destroy();
+                        } catch (Exception ignored) {}
+                    }, 800);
+                }
+            }
+        });
+
+        layout.addView(popupWebView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        dialog.setContentView(layout);
+        dialog.setOnDismissListener(d -> {
+            try {
+                popupWebView.destroy();
+            } catch (Exception ignored) {}
+        });
+
+        dialog.show();
+
+        // Bind transport
+        WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
+        transport.setWebView(popupWebView);
+        resultMsg.sendToTarget();
+        return true;
+    }
+
+    private boolean handlePopupUrl(Dialog dialog, String url) {
+        if (url == null || url.isEmpty() || url.equals("about:blank")) {
+            return false;
+        }
+
+        // Custom scheme in popup
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            handleCustomScheme(url);
+            dialog.dismiss();
+            return true;
+        }
+
+        // Keep OAuth, Google Accounts, and Google Sign-in inside the popup
+        if (url.contains("accounts.google.com") ||
+            url.contains("oauth") ||
+            url.contains("servicelogin") ||
+            url.contains("signin") ||
+            url.contains("google.com/accounts") ||
+            url.contains("googleusercontent.com")) {
+            return false; // Let popupWebView load it!
+        }
+
+        // External links (e.g. Telegram, Google Docs, external drive links)
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            dialog.dismiss();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean handleMainUrlLoading(WebView view, String url) {
+        if (url == null || url.isEmpty() || url.equals("about:blank")) {
+            return false;
+        }
+
+        // 1. STRICT REMIX/EDITOR PROTECTION:
+        // If anything navigates to the applet workspace/editor page without fullscreen, force fullscreen!
+        if (url.contains("/apps/3f0807e3-2494-4289-a3a6-c12032da731c") && !url.contains("fullscreenApplet=true")) {
+            view.loadUrl(TARGET_URL);
+            return true;
+        }
+
+        // 2. Custom schemes (intent:, tg:, mailto:, etc.)
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            handleCustomScheme(url);
+            return true;
+        }
+
+        // 3. Keep Google Sign-in and AI Studio inside WebView
+        if (isInternalUrl(url)) {
+            return false;
+        }
+
+        // 4. External URLs (Google Drive website, Telegram, Google Docs, etc.)
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private boolean isInternalUrl(String url) {
@@ -290,57 +412,6 @@ public class MainActivity extends AppCompatActivity {
                lower.contains("servicelogin");
     }
 
-    private boolean handleUrlLoading(String url) {
-        if (url == null || url.isEmpty() || url.equals("about:blank")) {
-            return false;
-        }
-
-        // Custom schemes (intent:, mailto:, tel:, etc.)
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            handleCustomScheme(url);
-            return true;
-        }
-
-        // Internal Google Auth and AI Studio Applet stay in WebView
-        if (isInternalUrl(url)) {
-            return false;
-        }
-
-        // External URLs: open in system browser to prevent CSP / framing errors
-        try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private void openUrlProperly(String url) {
-        if (url == null || url.isEmpty() || url.equals("about:blank")) {
-            return;
-        }
-
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            handleCustomScheme(url);
-            return;
-        }
-
-        if (isInternalUrl(url)) {
-            webView.loadUrl(url);
-            return;
-        }
-
-        try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
-        } catch (Exception e) {
-            webView.loadUrl(url);
-        }
-    }
-
     private void handleCustomScheme(String url) {
         try {
             if (url.startsWith("intent:")) {
@@ -353,7 +424,8 @@ public class MainActivity extends AppCompatActivity {
                     }
                     String fallbackUrl = intent.getStringExtra("browser_fallback_url");
                     if (fallbackUrl != null && !fallbackUrl.isEmpty()) {
-                        openUrlProperly(fallbackUrl);
+                        Intent fbIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(fallbackUrl));
+                        startActivity(fbIntent);
                         return;
                     }
                 }
@@ -364,6 +436,35 @@ public class MainActivity extends AppCompatActivity {
             }
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    private void handleDownload(String url, String userAgent, String contentDisposition, String mimetype) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            try {
+                DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+                request.setMimeType(mimetype);
+                String cookies = CookieManager.getInstance().getCookie(url);
+                request.addRequestHeader("cookie", cookies);
+                request.addRequestHeader("User-Agent", userAgent);
+                request.setDescription("Downloading file...");
+                String filename = URLUtil.guessFileName(url, contentDisposition, mimetype);
+                request.setTitle(filename);
+                request.allowScanningByMediaScanner();
+                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, filename);
+                DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+                if (dm != null) {
+                    dm.enqueue(request);
+                    Toast.makeText(getApplicationContext(), "Downloading " + filename, Toast.LENGTH_SHORT).show();
+                }
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
         }
     }
 

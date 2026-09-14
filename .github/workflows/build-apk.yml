@@ -43,19 +43,21 @@ jobs:
           name: RADDOC-Dictation-APKs
           path: final_apk/*
 
-      - name: Create GitHub Release with APK Downloads
+      - name: Create or Update GitHub Release with APK Downloads
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.8
-          name: "RADDOC's Dictation App v1.0.8 (Unfreeze Google Sign-In & Clean UI)"
+          name: "RADDOC's Dictation App v1.0.8 (Error Freeze & Chat Shift Fix)"
           body: |
             ## RADDOC's Dictation App v1.0.8
             Target URL: `https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true`
             
-            ### Fixes in v1.0.8:
-            - **Unfroze Google Sign-In Screen**: Fixed issue where the UI cleaner script inadvertently touched invisible security iframes on `accounts.google.com`. The cleaner now strictly checks the domain and never runs on Google account sign-in/auth screens, restoring full touch responsiveness.
-            - **Safe AI Studio UI Cleaning**: Removed the bottom disclaimer banner and "Chat / Preview / ..." bottom bar on the AI Studio host page without modifying iframe positioning or z-index.
-            - **All v1.0.7 Enhancements Included**: Native Google Drive report downloading, findings loading into editor, standalone Chrome export via FileProvider, and 24/7 background Keep-Alive service.
+            ### Fixes in this update:
+            - **Lock Preview on Error**: Stopped AI Studio from auto-shifting from Preview to the Chat window whenever an error occurs. Doctors stay right on the error screen to view details, retry processing, or switch AI models without the app freezing or needing a restart.
+            - **Offscreen Tab Enforcement**: Programmatically keeps the Preview tab active while hiding the Chat/Preview bottom bar from view.
+            - **Early Error Suppression**: Silences unhandled error and rejection propagation on the AI Studio host page.
+            - **Unfroze Google Sign-In**: Preserved Google account sign-in touch responsiveness.
+            - **All Core Features**: Native Google Drive report downloading, findings loading into editor, standalone Chrome export via FileProvider, and 24/7 background Keep-Alive service.
           files: final_apk/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

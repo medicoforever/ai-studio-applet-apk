@@ -54,10 +54,9 @@ jobs:
             Target URL: `https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true`
             
             ### Fixes in this update:
-            - **Lock Preview on Error**: Stopped AI Studio from auto-shifting from Preview to the Chat window whenever an error occurs. Doctors stay right on the error screen to view details, retry processing, or switch AI models without the app freezing or needing a restart.
-            - **Offscreen Tab Enforcement**: Programmatically keeps the Preview tab active while hiding the Chat/Preview bottom bar from view.
-            - **Early Error Suppression**: Silences unhandled error and rejection propagation on the AI Studio host page.
-            - **Unfroze Google Sign-In**: Preserved Google account sign-in touch responsiveness.
+            - **Resolved Google Sign-In Infinite Loading**: Fixed hanging circular progress spinner after entering Google credentials by ensuring all OAuth, lifecycle, and token exchange redirects complete natively without interruption.
+            - **Lock Preview on Error**: Stopped AI Studio from shifting away to Chat when an error occurs. Applet iframe remains 100% fullscreen on Preview so doctors can read error messages and continue dictating.
+            - **Safe Clean UI**: Hidden disclaimer bar, unwanted tabs, and options menu without DOM climbing or layout breakage.
             - **All Core Features**: Native Google Drive report downloading, findings loading into editor, standalone Chrome export via FileProvider, and 24/7 background Keep-Alive service.
           files: final_apk/*
         env:

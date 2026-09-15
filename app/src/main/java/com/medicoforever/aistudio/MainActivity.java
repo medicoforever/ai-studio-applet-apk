@@ -60,7 +60,7 @@ import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
 
-    public static final String TARGET_URL = "https://aistudio.google.com/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true";
+    public static final String TARGET_URL = "https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true";
     private static final int PERMISSION_REQ_CODE = 2001;
     private static final int FILE_CHOOSER_REQ_CODE = 3001;
 
@@ -210,9 +210,6 @@ public class MainActivity extends AppCompatActivity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 progressBar.setVisibility(View.VISIBLE);
-                if (url != null && (url.contains("ai.studio") || url.contains("aistudio.google.com")) && !url.contains("accounts.google")) {
-                    injectEarlyProtections(view);
-                }
             }
 
             @Override
@@ -220,8 +217,7 @@ public class MainActivity extends AppCompatActivity {
                 super.onPageFinished(view, url);
                 progressBar.setVisibility(View.GONE);
                 CookieManager.getInstance().flush();
-                if (url != null && (url.contains("ai.studio") || url.contains("aistudio.google.com")) && !url.contains("accounts.google")) {
-                    injectEarlyProtections(view);
+                if (url != null && isAppletUrl(url)) {
                     injectUiCleaner(view);
                 }
             }
@@ -232,13 +228,12 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
                 progressBar.setProgress(newProgress);
-                String currentUrl = view.getUrl();
-                if (newProgress >= 40 && currentUrl != null && (currentUrl.contains("ai.studio") || currentUrl.contains("aistudio.google.com")) && !currentUrl.contains("accounts.google")) {
-                    injectEarlyProtections(view);
-                    injectUiCleaner(view);
-                }
                 if (newProgress == 100) {
                     progressBar.setVisibility(View.GONE);
+                    String currentUrl = view.getUrl();
+                    if (currentUrl != null && isAppletUrl(currentUrl)) {
+                        injectUiCleaner(view);
+                    }
                 }
             }
 
@@ -288,256 +283,151 @@ public class MainActivity extends AppCompatActivity {
         settings.setBuiltInZoomControls(false);
     }
 
-    // Injects early error suppression and history protection to prevent AI Studio
-    // from detecting errors and switching the view away from the Preview applet
-    private void injectEarlyProtections(WebView view) {
-        if (view == null) return;
-        String currentUrl = view.getUrl();
-        if (currentUrl == null || (!currentUrl.contains("ai.studio") && !currentUrl.contains("aistudio.google.com"))) {
-            return;
+    private boolean isAppletUrl(String url) {
+        if (url == null) return false;
+        String lower = url.toLowerCase();
+        if (lower.contains("accounts.google") || lower.contains("signin") || 
+            lower.contains("oauth") || lower.contains("lifecycle") || 
+            lower.contains("authuser") || lower.contains("servicelogin")) {
+            return false;
         }
-        if (currentUrl.contains("accounts.google") || currentUrl.contains("signin") || currentUrl.contains("oauth")) {
-            return;
-        }
-
-        String js = "(function() {" +
-            "try {" +
-                "function isAiStudioHost() {" +
-                    "var h = (window.location.hostname || '').toLowerCase();" +
-                    "return h.indexOf('aistudio') !== -1 || h.indexOf('ai.studio') !== -1;" +
-                "}" +
-                "if (!isAiStudioHost()) return;" +
-                "if (window.__raddocEarlyInjected) return;" +
-                "window.__raddocEarlyInjected = true;" +
-
-                // 1. Intercept and stop propagation of error & unhandledrejection in capturing phase
-                "window.addEventListener('error', function(e) {" +
-                    "e.stopImmediatePropagation();" +
-                "}, true);" +
-                "window.addEventListener('unhandledrejection', function(e) {" +
-                    "e.stopImmediatePropagation();" +
-                "}, true);" +
-
-                // 2. Override window.onerror and onunhandledrejection
-                "try {" +
-                    "window.onerror = function() { return true; };" +
-                    "window.onunhandledrejection = function() { return true; };" +
-                "} catch(e) {}" +
-
-                // 3. Intercept postMessage error dispatches that tell host AI Studio to switch to Chat
-                "window.addEventListener('message', function(e) {" +
-                    "try {" +
-                        "if (!e || !e.data) return;" +
-                        "var d = e.data;" +
-                        "var isErr = false;" +
-                        "if (typeof d === 'string') {" +
-                            "var s = d.toLowerCase();" +
-                            "if (s.indexOf('error') !== -1 || s.indexOf('switchtochat') !== -1 || s.indexOf('view_chat') !== -1) isErr = true;" +
-                        "} else if (typeof d === 'object') {" +
-                            "var t = String(d.type || d.action || d.event || d.kind || '').toLowerCase();" +
-                            "if (t.indexOf('error') !== -1 || t.indexOf('reject') !== -1 || t.indexOf('fail') !== -1 || t.indexOf('crash') !== -1 || t.indexOf('chat') !== -1) isErr = true;" +
-                            "if (d.isError === true || d.hasError === true) isErr = true;" +
-                        "}" +
-                        "if (isErr) {" +
-                            "e.stopImmediatePropagation();" +
-                            "e.stopPropagation();" +
-                        "}" +
-                    "} catch(ex) {}" +
-                "}, true);" +
-
-                // 4. Hook history.pushState and history.replaceState to never drop fullscreenApplet=true
-                "try {" +
-                    "var _ps = history.pushState;" +
-                    "history.pushState = function(state, title, url) {" +
-                        "if (url && typeof url === 'string' && url.indexOf('fullscreenApplet') === -1 && isAiStudioHost()) {" +
-                            "var sep = url.indexOf('?') !== -1 ? '&' : '?';" +
-                            "url = url + sep + 'fullscreenApplet=true';" +
-                        "}" +
-                        "return _ps.call(this, state, title, url);" +
-                    "};" +
-                    "var _rs = history.replaceState;" +
-                    "history.replaceState = function(state, title, url) {" +
-                        "if (url && typeof url === 'string' && url.indexOf('fullscreenApplet') === -1 && isAiStudioHost()) {" +
-                            "var sep = url.indexOf('?') !== -1 ? '&' : '?';" +
-                            "url = url + sep + 'fullscreenApplet=true';" +
-                        "}" +
-                        "return _rs.call(this, state, title, url);" +
-                    "};" +
-                "} catch(ex) {}" +
-            "} catch(err) {}" +
-        "})();";
-        view.evaluateJavascript(js, null);
+        return (lower.contains("ai.studio") || lower.contains("aistudio.google.com")) && 
+               lower.contains("3f0807e3-2494-4289-a3a6-c12032da731c");
     }
 
     // Injects UI cleaner into host AI Studio page to remove bottom disclaimer banner,
-    // enforce Preview tab visibility, and hide Chat UI & options menu
+    // enforce Preview tab visibility, and ensure applet iframe stays 100% fullscreen on error
     private void injectUiCleaner(WebView view) {
         if (view == null) return;
         String currentUrl = view.getUrl();
-        if (currentUrl == null || (!currentUrl.contains("ai.studio") && !currentUrl.contains("aistudio.google.com"))) {
-            return;
-        }
-        if (currentUrl.contains("accounts.google") || currentUrl.contains("signin") || currentUrl.contains("oauth")) {
+        if (!isAppletUrl(currentUrl)) {
             return;
         }
 
         String js = "(function() {" +
-            "function isAiStudioHost() {" +
+            "function isAppletPage() {" +
                 "var h = (window.location.hostname || '').toLowerCase();" +
-                "return h.indexOf('aistudio') !== -1 || h.indexOf('ai.studio') !== -1;" +
+                "var p = (window.location.pathname || '').toLowerCase();" +
+                "var q = (window.location.search || '').toLowerCase();" +
+                "if (h.indexOf('ai.studio') === -1 && h.indexOf('aistudio.google.com') === -1) return false;" +
+                "if (p.indexOf('signin') !== -1 || p.indexOf('oauth') !== -1 || p.indexOf('lifecycle') !== -1 || q.indexOf('authuser') !== -1) return false;" +
+                "return p.indexOf('3f0807e3-2494-4289-a3a6-c12032da731c') !== -1;" +
             "}" +
-            "if (!isAiStudioHost()) return;" +
+            "if (!isAppletPage()) return;" +
 
             "if (window.__raddocCleanInjected) {" +
-                "if (typeof window.__raddocClean === 'function') window.__raddocClean();" +
+                "if (typeof window.__raddocEnforce === 'function') window.__raddocEnforce();" +
                 "return;" +
             "}" +
             "window.__raddocCleanInjected = true;" +
 
-            "window.__raddocClean = function() {" +
+            // 1. Intercept postMessage switchToChat error messages originating from the applet iframe
+            "window.addEventListener('message', function(e) {" +
                 "try {" +
-                    "if (!isAiStudioHost()) return;" +
+                    "var origin = (e.origin || '').toLowerCase();" +
+                    "if (origin.indexOf('accounts.google') !== -1 || origin.indexOf('apis.google') !== -1) return;" +
+                    "var d = e.data;" +
+                    "if (!d) return;" +
+                    "var isErr = false;" +
+                    "if (typeof d === 'string') {" +
+                        "var s = d.toLowerCase();" +
+                        "if (s.indexOf('switchtochat') !== -1 || s.indexOf('view_chat') !== -1 || s.indexOf('switch_to_chat') !== -1) {" +
+                            "isErr = true;" +
+                        "}" +
+                    "} else if (typeof d === 'object') {" +
+                        "var action = String(d.action || d.type || d.event || '').toLowerCase();" +
+                        "if (action === 'switchtochat' || action === 'view_chat' || action === 'switch_tab_chat') {" +
+                            "isErr = true;" +
+                        "}" +
+                    "}" +
+                    "if (isErr) {" +
+                        "e.stopImmediatePropagation();" +
+                        "e.stopPropagation();" +
+                    "}" +
+                "} catch(ex) {}" +
+            "}, true);" +
 
-                    // 1. Hide 'This app was developed by another user' disclaimer banner
-                    "var allDivs = document.querySelectorAll('div, footer, p, span, aside, section');" +
-                    "for (var j = 0; j < allDivs.length; j++) {" +
-                        "var el = allDivs[j];" +
-                        "var txt = el.textContent || '';" +
-                        "if (txt.indexOf('This app was developed by another user') !== -1) {" +
-                            "var p = el;" +
-                            "while (p.parentElement && p.parentElement !== document.body && p.parentElement.offsetHeight < 160) { p = p.parentElement; }" +
-                            "p.style.setProperty('display', 'none', 'important');" +
-                            "p.style.setProperty('visibility', 'hidden', 'important');" +
-                            "p.style.setProperty('height', '0px', 'important');" +
+            // 2. Main enforcement function
+            "window.__raddocEnforce = function() {" +
+                "try {" +
+                    "if (!isAppletPage()) return;" +
+
+                    // A. Pin the dictation applet iframe to fullscreen at high z-index
+                    "var iframes = document.querySelectorAll('iframe');" +
+                    "var appletIframe = null;" +
+                    "for (var i = 0; i < iframes.length; i++) {" +
+                        "var ifr = iframes[i];" +
+                        "var src = (ifr.src || '').toLowerCase();" +
+                        "if (src.indexOf('accounts.google') !== -1) continue;" +
+                        "if (src.indexOf('usercontent') !== -1 || ifr.hasAttribute('sandbox') || (ifr.offsetWidth > 100 && ifr.offsetHeight > 100)) {" +
+                            "appletIframe = ifr;" +
+                            "break;" +
                         "}" +
                     "}" +
 
-                    // 2. DETECT CHAT VIEW & ENFORCE PREVIEW
+                    "if (appletIframe) {" +
+                        "appletIframe.style.setProperty('position', 'fixed', 'important');" +
+                        "appletIframe.style.setProperty('top', '0px', 'important');" +
+                        "appletIframe.style.setProperty('left', '0px', 'important');" +
+                        "appletIframe.style.setProperty('width', '100vw', 'important');" +
+                        "appletIframe.style.setProperty('height', '100vh', 'important');" +
+                        "appletIframe.style.setProperty('max-height', '100vh', 'important');" +
+                        "appletIframe.style.setProperty('z-index', '99999', 'important');" +
+                        "appletIframe.style.setProperty('border', 'none', 'important');" +
+                    "}" +
+
+                    // B. Detect if Chat view or Remix prompt is active
                     "var bodyText = document.body ? (document.body.innerText || '') : '';" +
                     "var isChatShowing = (bodyText.indexOf('Remix to make this app your own') !== -1 || " +
                                          "bodyText.indexOf('Here are some ideas to try') !== -1 || " +
                                          "bodyText.indexOf('Generate video from text') !== -1);" +
 
-                    // Find Preview and Chat buttons across all elements
-                    "var allElements = document.querySelectorAll('button, [role=\"tab\"], [role=\"button\"], a, div, span');" +
+                    // C. Locate Preview tab button
+                    "var buttons = document.querySelectorAll('button, [role=\"tab\"], [role=\"button\"], a');" +
                     "var previewBtn = null;" +
-                    "var chatBtn = null;" +
-                    "for (var t = 0; t < allElements.length; t++) {" +
-                        "var elem = allElements[t];" +
-                        "var etxt = (elem.textContent || '').trim();" +
-                        "var earia = elem.getAttribute('aria-label') || '';" +
-                        "if (etxt === 'Preview' || earia === 'Preview') {" +
-                            "previewBtn = elem.closest('button, [role=\"tab\"], [role=\"button\"], a') || elem;" +
-                        "} else if (etxt === 'Chat' || earia === 'Chat') {" +
-                            "chatBtn = elem.closest('button, [role=\"tab\"], [role=\"button\"], a') || elem;" +
-                        "}" +
-                    "}" +
-
-                    "var isChatSelected = isChatShowing;" +
-                    "if (chatBtn) {" +
-                        "if (chatBtn.getAttribute('aria-selected') === 'true' || " +
-                            "chatBtn.classList.contains('active') || " +
-                            "chatBtn.classList.contains('selected') || " +
-                            "chatBtn.classList.contains('mdc-tab--active')) {" +
-                            "isChatSelected = true;" +
-                        "}" +
-                    "}" +
-                    "var isPreviewSelected = false;" +
-                    "if (previewBtn) {" +
-                        "if (previewBtn.getAttribute('aria-selected') === 'true' || " +
-                            "previewBtn.classList.contains('active') || " +
-                            "previewBtn.classList.contains('selected') || " +
-                            "previewBtn.classList.contains('mdc-tab--active')) {" +
-                            "isPreviewSelected = true;" +
-                        "}" +
-                    "}" +
-
-                    // If Chat is selected or showing, or Preview is not selected: CLICK PREVIEW!
-                    "if (previewBtn && (isChatSelected || !isPreviewSelected)) {" +
-                        "previewBtn.click();" +
-                        "try {" +
-                            "previewBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));" +
-                        "} catch(e) {}" +
-                    "}" +
-
-                    // If Chat view STILL persists after clicking Preview, trigger native fallback reload!
-                    "if (isChatShowing) {" +
-                        "if (!window.__raddocChatSince) { window.__raddocChatSince = Date.now(); }" +
-                        "else if (Date.now() - window.__raddocChatSince > 800) {" +
-                            "window.__raddocChatSince = Date.now();" +
-                            "if (window.AndroidBridge && typeof window.AndroidBridge.forceRestorePreview === 'function') {" +
-                                "window.AndroidBridge.forceRestorePreview();" +
-                            "} else {" +
-                                "window.location.replace('https://aistudio.google.com/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true');" +
-                            "}" +
-                        "}" +
-                    "} else {" +
-                        "window.__raddocChatSince = 0;" +
-                    "}" +
-
-                    // 3. Move the navigation bar offscreen so the user doesn't see Chat/Preview bottom bar,
-                    // but programmatic .click() stays 100% active
-                    "var navs = document.querySelectorAll('nav, div, footer, [role=\"tablist\"], [role=\"navigation\"]');" +
-                    "for (var k = 0; k < navs.length; k++) {" +
-                        "var n = navs[k];" +
-                        "var ntxt = n.textContent || '';" +
-                        "if (ntxt.indexOf('Chat') !== -1 && ntxt.indexOf('Preview') !== -1) {" +
-                            "n.style.setProperty('position', 'fixed', 'important');" +
-                            "n.style.setProperty('top', '-9999px', 'important');" +
-                            "n.style.setProperty('left', '-9999px', 'important');" +
-                            "n.style.setProperty('opacity', '0', 'important');" +
-                            "n.style.setProperty('pointer-events', 'none', 'important');" +
-                            "n.style.setProperty('width', '1px', 'important');" +
-                            "n.style.setProperty('height', '1px', 'important');" +
-                            "n.style.setProperty('overflow', 'hidden', 'important');" +
-                        "}" +
-                    "}" +
-
-                    // 4. Hide '...' more options button bar
-                    "var btns = document.querySelectorAll('button, [role=\"button\"]');" +
-                    "for (var b = 0; b < btns.length; b++) {" +
-                        "var btn = btns[b];" +
-                        "var btxt = (btn.textContent || '').trim();" +
+                    "for (var b = 0; b < buttons.length; b++) {" +
+                        "var btn = buttons[b];" +
+                        "var txt = (btn.textContent || '').trim();" +
                         "var aria = btn.getAttribute('aria-label') || '';" +
-                        "if (btxt === '...' || aria === 'More' || aria === 'More options') {" +
-                            "var bar = btn.closest('nav, [role=\"tablist\"], div');" +
-                            "if (bar && bar !== document.body && bar.offsetHeight < 80) {" +
-                                "bar.style.setProperty('position', 'fixed', 'important');" +
-                                "bar.style.setProperty('top', '-9999px', 'important');" +
-                                "bar.style.setProperty('left', '-9999px', 'important');" +
-                                "bar.style.setProperty('opacity', '0', 'important');" +
-                                "bar.style.setProperty('pointer-events', 'none', 'important');" +
+                        "if (txt === 'Preview' || aria === 'Preview') {" +
+                            "previewBtn = btn;" +
+                            "var isSelected = btn.getAttribute('aria-selected') === 'true' || " +
+                                             "btn.classList.contains('active') || " +
+                                             "btn.classList.contains('selected') || " +
+                                             "btn.classList.contains('mdc-tab--active');" +
+                            "if (!isSelected) {" +
+                                "isChatShowing = true;" +
                             "}" +
+                            "break;" +
                         "}" +
                     "}" +
 
-                    // 5. Hide Chat editor panels if they ever render
-                    "var chatPanels = document.querySelectorAll('[class*=\"chat-container\"], [class*=\"chat_container\"], [class*=\"prompt-editor\"], [class*=\"conversation-view\"]');" +
-                    "for (var c = 0; c < chatPanels.length; c++) {" +
-                        "chatPanels[c].style.setProperty('display', 'none', 'important');" +
+                    // If Chat view is displayed or Preview is deselected, click Preview immediately!
+                    "if (previewBtn && isChatShowing) {" +
+                        "previewBtn.click();" +
                     "}" +
 
-                    // 6. Keep URL parameter fullscreenApplet=true
-                    "if (window.location.pathname.indexOf('3f0807e3-2494-4289-a3a6-c12032da731c') !== -1 && window.location.search.indexOf('fullscreenApplet=true') === -1) {" +
-                        "try {" +
-                            "var u = new URL(window.location.href);" +
-                            "u.searchParams.set('fullscreenApplet', 'true');" +
-                            "window.history.replaceState(null, '', u.toString());" +
-                        "} catch(e) {}" +
+                    // D. Safely hide disclaimer banner text if present
+                    "var allElements = document.querySelectorAll('p, span, footer, aside, [role=\"status\"], [role=\"alert\"]');" +
+                    "for (var j = 0; j < allElements.length; j++) {" +
+                        "var el = allElements[j];" +
+                        "var t = el.textContent || '';" +
+                        "if (t.indexOf('This app was developed by another user') !== -1 && el.children.length === 0) {" +
+                            "var parent = el.parentElement;" +
+                            "if (parent && parent !== document.body && !parent.querySelector('iframe')) {" +
+                                "parent.style.setProperty('display', 'none', 'important');" +
+                            "}" +
+                        "}" +
                     "}" +
                 "} catch(e) {}" +
             "};" +
 
-            "window.__raddocClean();" +
+            "window.__raddocEnforce();" +
             "if (!window.__raddocInterval) {" +
-                "window.__raddocInterval = setInterval(window.__raddocClean, 100);" +
+                "window.__raddocInterval = setInterval(window.__raddocEnforce, 300);" +
             "}" +
-            "if (!window.__raddocObserver && document.body) {" +
-                "window.__raddocObserver = new MutationObserver(window.__raddocClean);" +
-                "window.__raddocObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'aria-selected'] });" +
-            "}" +
-            "document.addEventListener('DOMContentLoaded', window.__raddocClean);" +
         "})();";
+
         view.evaluateJavascript(js, null);
     }
 
@@ -546,15 +436,6 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void openHtmlInChrome(String htmlContent, String filename) {
             runOnUiThread(() -> exportAndOpenInChrome(htmlContent, filename));
-        }
-
-        @JavascriptInterface
-        public void forceRestorePreview() {
-            runOnUiThread(() -> {
-                if (webView != null) {
-                    webView.loadUrl(TARGET_URL);
-                }
-            });
         }
     }
 
@@ -704,14 +585,14 @@ public class MainActivity extends AppCompatActivity {
         header.addView(title, titleParams);
 
         final Button openInChromeBtn = new Button(MainActivity.this);
-        openInChromeBtn.setText("🌐 Open in Chrome");
+        openInChromeBtn.setText("?? Open in Chrome");
         openInChromeBtn.setTextColor(Color.parseColor("#38BDF8"));
         openInChromeBtn.setBackgroundColor(Color.TRANSPARENT);
         openInChromeBtn.setVisibility(View.GONE);
         header.addView(openInChromeBtn);
 
         Button closeBtn = new Button(MainActivity.this);
-        closeBtn.setText("✕ Close");
+        closeBtn.setText("? Close");
         closeBtn.setTextColor(Color.WHITE);
         closeBtn.setBackgroundColor(Color.TRANSPARENT);
         closeBtn.setOnClickListener(v -> dialog.dismiss());
@@ -877,35 +758,13 @@ public class MainActivity extends AppCompatActivity {
             return false;
         }
 
-        Uri uri = Uri.parse(url);
-        String host = uri.getHost() != null ? uri.getHost().toLowerCase() : "";
-        String path = uri.getPath() != null ? uri.getPath() : "";
-
-        // 1. Strict editor protection (lock to fullscreen applet on ai.studio)
-        if (host.equals("ai.studio") || host.equals("aistudio.google.com")) {
-            if (!path.contains("3f0807e3-2494-4289-a3a6-c12032da731c")) {
-                view.loadUrl(TARGET_URL);
-                return true;
-            }
-            String query = uri.getQuery();
-            if (query == null || !query.contains("fullscreenApplet=true")) {
-                view.loadUrl(TARGET_URL);
-                return true;
-            }
-        }
-
-        // 2. Custom schemes (intent:, tg:, mailto:, etc.)
+        // 1. Custom schemes (intent:, tg:, mailto:, etc.)
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             handleCustomScheme(url);
             return true;
         }
 
-        // 3. Keep internal URLs, Firebase Auth, Google Auth, and Drive Picker inside WebView
-        if (isInternalUrl(url)) {
-            return false;
-        }
-
-        // 4. External Telegram link
+        // 2. External Telegram link
         if (url.contains("t.me") || url.contains("telegram.me")) {
             try {
                 Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
@@ -914,7 +773,7 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception ignored) {}
         }
 
-        // 5. External Drive folder link (e.g. drive.google.com/drive/folders/...)
+        // 3. External Drive folder link (e.g. drive.google.com/drive/folders/...)
         if (url.contains("drive.google.com") && !url.contains("picker")) {
             try {
                 Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
@@ -923,6 +782,22 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception e) {
                 return false;
             }
+        }
+
+        // 4. AUTH, LOGIN, GOOGLE SERVICES & INTERNAL URLS: NEVER intercept! Let WebView load naturally!
+        if (isInternalUrl(url)) {
+            return false;
+        }
+
+        // 5. If user navigates away from AI Studio to another website, open externally
+        Uri uri = Uri.parse(url);
+        String host = uri.getHost() != null ? uri.getHost().toLowerCase() : "";
+        if (!host.contains("ai.studio") && !host.contains("google.com") && !host.contains("googleusercontent.com")) {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+                startActivity(intent);
+                return true;
+            } catch (Exception ignored) {}
         }
 
         // Default: stay inside WebView
@@ -948,7 +823,14 @@ public class MainActivity extends AppCompatActivity {
                lower.contains("picker") ||
                lower.contains("oauth") ||
                lower.contains("/signin") ||
-               lower.contains("servicelogin");
+               lower.contains("signin") ||
+               lower.contains("signup") ||
+               lower.contains("servicelogin") ||
+               lower.contains("lifecycle") ||
+               lower.contains("authuser") ||
+               lower.contains("continue=") ||
+               lower.contains("state=") ||
+               lower.contains("code=");
     }
 
     private void handleCustomScheme(String url) {
@@ -1043,13 +925,6 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
-        String currentUrl = webView.getUrl();
-        if (currentUrl != null && (currentUrl.contains("ai.studio") || currentUrl.contains("aistudio.google.com"))) {
-            if (!currentUrl.contains("fullscreenApplet=true") || !currentUrl.contains("3f0807e3-2494-4289-a3a6-c12032da731c")) {
-                webView.loadUrl(TARGET_URL);
-                return;
-            }
-        }
         if (webView.canGoBack()) {
             webView.goBack();
         } else {

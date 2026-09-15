@@ -45,11 +45,14 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
+import androidx.core.app.NotificationCompat;
 import org.json.JSONTokener;
 import java.io.ByteArrayInputStream;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -57,10 +60,20 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import android.media.MediaScannerConnection;
+import android.util.Base64;
+import android.app.AlertDialog;
+import android.app.ProgressDialog;
+import org.json.JSONObject;
 
 public class MainActivity extends AppCompatActivity {
 
     public static final String TARGET_URL = "https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true";
+    public static final int CURRENT_VERSION_CODE = 14;
+    public static final String GITHUB_RELEASE_API = "https://api.github.com/repos/medicoforever/ai-studio-applet-apk/releases/tags/v1.0.8";
+    public static final String APK_DOWNLOAD_URL = "https://github.com/medicoforever/ai-studio-applet-apk/releases/download/v1.0.8/RADDOC-Dictation-Release.apk";
     private static final int PERMISSION_REQ_CODE = 2001;
     private static final int FILE_CHOOSER_REQ_CODE = 3001;
 
@@ -89,6 +102,13 @@ public class MainActivity extends AppCompatActivity {
                 requestBatteryOptimizationExemption();
             }
         }, 3000);
+
+        // Check for app updates in background after 2.5s
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            if (!isFinishing() && !isDestroyed()) {
+                checkForAppUpdates();
+            }
+        }, 2500);
 
         if (savedInstanceState == null) {
             webView.loadUrl(TARGET_URL);
@@ -321,6 +341,8 @@ public class MainActivity extends AppCompatActivity {
         settings.setDatabaseEnabled(true);
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
+        settings.setAllowFileAccessFromFileURLs(true);
+        settings.setAllowUniversalAccessFromFileURLs(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         settings.setSupportMultipleWindows(true);
@@ -376,9 +398,44 @@ public class MainActivity extends AppCompatActivity {
                             "try {" +
                                 "el.setAttribute('allow', micAllowPolicy);" +
                                 "el.allow = micAllowPolicy;" +
+                                "var curSb = el.getAttribute('sandbox') || '';" +
+                                "if (curSb && curSb.indexOf('allow-downloads') === -1) {" +
+                                    "el.setAttribute('sandbox', curSb + ' allow-downloads');" +
+                                "}" +
                             "} catch(e) {}" +
                         "}" +
                         "return el;" +
+                    "};" +
+                "} catch(e) {}" +
+            "}" +
+
+            // Hook HTMLAnchorElement.prototype.click to intercept all in-memory Blob and Data downloads
+            "if (!window.__raddocAnchorHooked) {" +
+                "window.__raddocAnchorHooked = true;" +
+                "try {" +
+                    "var origAnchorClick = HTMLAnchorElement.prototype.click;" +
+                    "HTMLAnchorElement.prototype.click = function() {" +
+                        "try {" +
+                            "var href = this.href || '';" +
+                            "var dl = this.getAttribute('download') || this.download;" +
+                            "if (href.indexOf('blob:') === 0 || (dl && href.indexOf('data:') === 0)) {" +
+                                "var fname = dl || 'dictation_file';" +
+                                "var xhr = new XMLHttpRequest();" +
+                                "xhr.open('GET', href, true);" +
+                                "xhr.responseType = 'blob';" +
+                                "xhr.onload = function() {" +
+                                    "var reader = new FileReader();" +
+                                    "reader.onloadend = function() {" +
+                                        "if (window.AndroidBridge && window.AndroidBridge.saveBase64File) {" +
+                                            "window.AndroidBridge.saveBase64File(reader.result, fname, xhr.response.type || 'application/octet-stream');" +
+                                        "}" +
+                                    "};" +
+                                    "reader.readAsDataURL(xhr.response);" +
+                                "};" +
+                                "xhr.send();" +
+                            "}" +
+                        "} catch(e) {}" +
+                        "return origAnchorClick.apply(this, arguments);" +
                     "};" +
                 "} catch(e) {}" +
             "}" +
@@ -426,6 +483,10 @@ public class MainActivity extends AppCompatActivity {
                     "for (var i = 0; i < iframes.length; i++) {" +
                         "var ifr = iframes[i];" +
                         "try {" +
+                            "var curSb = ifr.getAttribute('sandbox') || '';" +
+                            "if (curSb && curSb.indexOf('allow-downloads') === -1) {" +
+                                "ifr.setAttribute('sandbox', curSb + ' allow-downloads');" +
+                            "}" +
                             "var curAllow = ifr.getAttribute('allow') || '';" +
                             "if (curAllow.indexOf('microphone') === -1) {" +
                                 "ifr.setAttribute('allow', micAllowPolicy);" +
@@ -521,6 +582,11 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void openHtmlInChrome(String htmlContent, String filename) {
             runOnUiThread(() -> exportAndOpenInChrome(htmlContent, filename));
+        }
+
+        @JavascriptInterface
+        public void saveBase64File(String base64Data, String filename, String mimeType) {
+            runOnUiThread(() -> saveBase64ToDownloads(base64Data, filename, mimeType));
         }
 
         @JavascriptInterface
@@ -697,14 +763,14 @@ public class MainActivity extends AppCompatActivity {
         header.addView(title, titleParams);
 
         final Button openInChromeBtn = new Button(MainActivity.this);
-        openInChromeBtn.setText("?? Open in Chrome");
+        openInChromeBtn.setText("🌐 Open in Chrome");
         openInChromeBtn.setTextColor(Color.parseColor("#38BDF8"));
         openInChromeBtn.setBackgroundColor(Color.TRANSPARENT);
         openInChromeBtn.setVisibility(View.GONE);
         header.addView(openInChromeBtn);
 
         Button closeBtn = new Button(MainActivity.this);
-        closeBtn.setText("? Close");
+        closeBtn.setText("✕ Close");
         closeBtn.setTextColor(Color.WHITE);
         closeBtn.setBackgroundColor(Color.TRANSPARENT);
         closeBtn.setOnClickListener(v -> dialog.dismiss());
@@ -973,31 +1039,339 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void handleDownload(String url, String userAgent, String contentDisposition, String mimetype) {
+        if (url == null || url.isEmpty()) return;
+
+        if (url.startsWith("blob:")) {
+            handleBlobDownload(url, contentDisposition, mimetype);
+            return;
+        }
+
+        if (url.startsWith("data:")) {
+            saveBase64ToDownloads(url, extractFilename(contentDisposition, mimetype), mimetype);
+            return;
+        }
+
+        handleHttpDownload(url, userAgent, contentDisposition, mimetype);
+    }
+
+    private void handleBlobDownload(String blobUrl, String contentDisposition, String mimeType) {
+        String filename = extractFilename(contentDisposition, mimeType);
+        String js = "(function() {" +
+                "var url = '" + blobUrl + "';" +
+                "var fname = '" + filename + "';" +
+                "var mime = '" + (mimeType != null ? mimeType : "application/octet-stream") + "';" +
+                "var xhr = new XMLHttpRequest();" +
+                "xhr.open('GET', url, true);" +
+                "xhr.responseType = 'blob';" +
+                "xhr.onload = function() {" +
+                "    var reader = new FileReader();" +
+                "    reader.onloadend = function() {" +
+                "        if (window.AndroidBridge && window.AndroidBridge.saveBase64File) {" +
+                "            window.AndroidBridge.saveBase64File(reader.result, fname, mime);" +
+                "        }" +
+                "    };" +
+                "    reader.readAsDataURL(xhr.response);" +
+                "};" +
+                "xhr.onerror = function() {" +
+                "    console.error('Failed to extract blob download');" +
+                "};" +
+                "xhr.send();" +
+                "})();";
+        webView.evaluateJavascript(js, null);
+    }
+
+    private String extractFilename(String contentDisposition, String mimeType) {
+        String filename = null;
+        if (contentDisposition != null) {
+            try {
+                filename = URLUtil.guessFileName("", contentDisposition, mimeType);
+            } catch (Exception ignored) {}
+        }
+        if (filename == null || filename.isEmpty() || filename.equalsIgnoreCase("downloadfile") || filename.equalsIgnoreCase("downloadfile.bin")) {
+            String ext = ".bin";
+            if (mimeType != null) {
+                String m = mimeType.toLowerCase();
+                if (m.contains("audio/wav") || m.contains("wav")) ext = ".wav";
+                else if (m.contains("audio/webm") || m.contains("webm")) ext = ".webm";
+                else if (m.contains("audio/mpeg") || m.contains("mp3")) ext = ".mp3";
+                else if (m.contains("word") || m.contains("msword") || m.contains(".document")) ext = ".doc";
+                else if (m.contains("rtf")) ext = ".rtf";
+                else if (m.contains("html")) ext = ".html";
+                else if (m.contains("text/plain") || m.contains("txt")) ext = ".txt";
+            }
+            filename = "Dictation_File_" + System.currentTimeMillis() + ext;
+        }
+        return filename;
+    }
+
+    private void handleHttpDownload(String url, String userAgent, String contentDisposition, String mimetype) {
         try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+            request.setMimeType(mimetype);
+            String cookies = CookieManager.getInstance().getCookie(url);
+            if (cookies != null) request.addRequestHeader("cookie", cookies);
+            request.addRequestHeader("User-Agent", userAgent);
+            request.setDescription("Downloading file...");
+            String filename = extractFilename(contentDisposition, mimetype);
+            request.setTitle(filename);
+            request.allowScanningByMediaScanner();
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, filename);
+            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm != null) {
+                dm.enqueue(request);
+                Toast.makeText(getApplicationContext(), "Downloading " + filename + "...", Toast.LENGTH_SHORT).show();
+            }
+        } catch (Exception ex) {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (Exception e) {
+                Toast.makeText(getApplicationContext(), "Could not start download: " + ex.getMessage(), Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    public void saveBase64ToDownloads(String base64Data, String filename, String mimeType) {
+        if (base64Data == null || base64Data.isEmpty()) {
+            Toast.makeText(this, "Download failed: empty content", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            int commaIndex = base64Data.indexOf(",");
+            String pureBase64 = (commaIndex >= 0) ? base64Data.substring(commaIndex + 1) : base64Data;
+            byte[] fileBytes = Base64.decode(pureBase64, Base64.DEFAULT);
+
+            String safeName = (filename == null || filename.trim().isEmpty()) ? "Dictation_Report" : filename.trim();
+            safeName = safeName.replaceAll("[\\\\/:*?\"<>|]", "_");
+
+            File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            if (!downloadsDir.exists()) {
+                downloadsDir.mkdirs();
+            }
+
+            File targetFile = new File(downloadsDir, safeName);
+            int counter = 1;
+            String base = safeName;
+            String ext = "";
+            int dot = safeName.lastIndexOf('.');
+            if (dot > 0) {
+                base = safeName.substring(0, dot);
+                ext = safeName.substring(dot);
+            }
+            while (targetFile.exists()) {
+                targetFile = new File(downloadsDir, base + " (" + counter + ")" + ext);
+                counter++;
+            }
+
+            FileOutputStream fos = new FileOutputStream(targetFile);
+            fos.write(fileBytes);
+            fos.flush();
+            fos.close();
+
+            MediaScannerConnection.scanFile(this, new String[]{targetFile.getAbsolutePath()}, null, null);
+            Toast.makeText(this, "Downloaded to Downloads/" + targetFile.getName(), Toast.LENGTH_LONG).show();
+
+            showDownloadNotification(targetFile, mimeType);
+        } catch (Exception e) {
+            e.printStackTrace();
+            Toast.makeText(this, "Save error: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void showDownloadNotification(File file, String mimeType) {
+        try {
+            String channelId = "dictation_downloads";
+            android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                android.app.NotificationChannel channel = new android.app.NotificationChannel(
+                        channelId, "File Downloads", android.app.NotificationManager.IMPORTANCE_DEFAULT);
+                channel.setDescription("Notifications for downloaded dictation files and reports");
+                if (nm != null) nm.createNotificationChannel(channel);
+            }
+
+            Uri fileUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
+            Intent viewIntent = new Intent(Intent.ACTION_VIEW);
+            viewIntent.setDataAndType(fileUri, (mimeType != null && !mimeType.isEmpty()) ? mimeType : "*/*");
+            viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            viewIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            android.app.PendingIntent pendingIntent = android.app.PendingIntent.getActivity(
+                    this, (int) System.currentTimeMillis(), viewIntent,
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? android.app.PendingIntent.FLAG_IMMUTABLE : 0);
+
+            NotificationCompat.Builder builder = new NotificationCompat.Builder(this, channelId)
+                    .setSmallIcon(R.mipmap.ic_launcher)
+                    .setContentTitle("Download Complete")
+                    .setContentText(file.getName())
+                    .setAutoCancel(true)
+                    .setContentIntent(pendingIntent);
+
+            if (nm != null) {
+                nm.notify((int) System.currentTimeMillis(), builder.build());
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void checkForAppUpdates() {
+        new Thread(() -> {
+            try {
+                URL url = new URL(GITHUB_RELEASE_API);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setRequestProperty("User-Agent", "RADDOC-Dictation-App");
+                conn.setConnectTimeout(10000);
+                conn.setReadTimeout(15000);
+
+                if (conn.getResponseCode() == 200) {
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        sb.append(line);
+                    }
+                    reader.close();
+
+                    JSONObject json = new JSONObject(sb.toString());
+                    String body = json.optString("body", "");
+                    String tagName = json.optString("tag_name", "");
+
+                    int remoteVersionCode = CURRENT_VERSION_CODE;
+                    Pattern p = Pattern.compile("VERSION_CODE:\\s*(\\d+)");
+                    Matcher m = p.matcher(body);
+                    if (m.find()) {
+                        remoteVersionCode = Integer.parseInt(m.group(1));
+                    }
+
+                    boolean updateAvailable = remoteVersionCode > CURRENT_VERSION_CODE;
+
+                    if (updateAvailable) {
+                        final String downloadUrl = APK_DOWNLOAD_URL;
+                        runOnUiThread(() -> promptUserToUpdate(downloadUrl, tagName));
+                    }
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
+    }
+
+    private void promptUserToUpdate(String downloadUrl, String tagName) {
+        if (isFinishing() || isDestroyed()) return;
+
+        new AlertDialog.Builder(this)
+                .setTitle("Update Available")
+                .setMessage("A new update of RADDOC Dictation is available with bug fixes and improvements. Would you like to install it now?")
+                .setPositiveButton("Update Now", (dialog, which) -> downloadAndInstallApk(downloadUrl))
+                .setNegativeButton("Later", null)
+                .show();
+    }
+
+    private void downloadAndInstallApk(String downloadUrl) {
+        ProgressDialog progress = new ProgressDialog(this);
+        progress.setTitle("Downloading Update");
+        progress.setMessage("Downloading RADDOC Dictation APK...");
+        progress.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+        progress.setIndeterminate(false);
+        progress.setMax(100);
+        progress.setCancelable(false);
+        progress.show();
+
+        new Thread(() -> {
+            try {
+                URL u = new URL(downloadUrl);
+                HttpURLConnection conn = (HttpURLConnection) u.openConnection();
+                conn.setInstanceFollowRedirects(true);
+                conn.connect();
+
+                int code = conn.getResponseCode();
+                int redirects = 0;
+                while ((code == HttpURLConnection.HTTP_MOVED_TEMP || code == HttpURLConnection.HTTP_MOVED_PERM || code == HttpURLConnection.HTTP_SEE_OTHER || code == 307) && redirects < 5) {
+                    String loc = conn.getHeaderField("Location");
+                    conn.disconnect();
+                    u = new URL(loc);
+                    conn = (HttpURLConnection) u.openConnection();
+                    conn.connect();
+                    code = conn.getResponseCode();
+                    redirects++;
+                }
+
+                int fileLength = conn.getContentLength();
+                File updatesDir = new File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "updates");
+                if (!updatesDir.exists()) updatesDir.mkdirs();
+                File apkFile = new File(updatesDir, "RADDOC-Dictation-Update.apk");
+
+                InputStream input = conn.getInputStream();
+                FileOutputStream output = new FileOutputStream(apkFile);
+
+                byte[] data = new byte[8192];
+                long total = 0;
+                int count;
+                while ((count = input.read(data)) != -1) {
+                    total += count;
+                    if (fileLength > 0) {
+                        int pct = (int) (total * 100 / fileLength);
+                        runOnUiThread(() -> progress.setProgress(pct));
+                    }
+                    output.write(data, 0, count);
+                }
+                output.flush();
+                output.close();
+                input.close();
+
+                runOnUiThread(() -> {
+                    try {
+                        progress.dismiss();
+                    } catch (Exception ignored) {}
+                    installApk(apkFile);
+                });
+            } catch (Exception e) {
+                e.printStackTrace();
+                runOnUiThread(() -> {
+                    try {
+                        progress.dismiss();
+                    } catch (Exception ignored) {}
+                    Toast.makeText(MainActivity.this, "Download failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                });
+            }
+        }).start();
+    }
+
+    private void installApk(File apkFile) {
+        if (!apkFile.exists()) {
+            Toast.makeText(this, "APK file not found", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (!getPackageManager().canRequestPackageInstalls()) {
+                new AlertDialog.Builder(this)
+                        .setTitle("Permission Needed")
+                        .setMessage("Please allow installing updates from this app in settings.")
+                        .setPositiveButton("Settings", (d, w) -> {
+                            Intent intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
+                            intent.setData(Uri.parse("package:" + getPackageName()));
+                            startActivity(intent);
+                        })
+                        .setNegativeButton("Cancel", null)
+                        .show();
+                return;
+            }
+        }
+
+        try {
+            Uri apkUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", apkFile);
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
         } catch (Exception e) {
-            try {
-                DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-                request.setMimeType(mimetype);
-                String cookies = CookieManager.getInstance().getCookie(url);
-                request.addRequestHeader("cookie", cookies);
-                request.addRequestHeader("User-Agent", userAgent);
-                request.setDescription("Downloading file...");
-                String filename = URLUtil.guessFileName(url, contentDisposition, mimetype);
-                request.setTitle(filename);
-                request.allowScanningByMediaScanner();
-                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, filename);
-                DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-                if (dm != null) {
-                    dm.enqueue(request);
-                    Toast.makeText(getApplicationContext(), "Downloading " + filename, Toast.LENGTH_SHORT).show();
-                }
-            } catch (Exception ex) {
-                ex.printStackTrace();
-            }
+            e.printStackTrace();
+            Toast.makeText(this, "Installation error: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
     }
 

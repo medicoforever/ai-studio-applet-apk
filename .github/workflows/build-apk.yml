@@ -48,12 +48,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.8
-          name: "RADDOC's Dictation App v1.0.8 (Microphone Permission & Recording Fix)"
+          name: "RADDOC's Dictation App v1.0.8 (Microphone, File Downloads & Auto-Updater)"
           body: |
             ## RADDOC's Dictation App v1.0.8
+            VERSION_CODE: 14
             Target URL: `https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true`
             
-            ### Fixes in this update:
+            ### Fixes & Enhancements in this update:
+            - **Native File & Report Downloads**: Fixed document and audio downloads (Word .doc/.docx, Audio WAV/WebM, RTF, HTML). Downloads are intercepted from Blob/Data URLs and saved directly to the device's public Downloads folder with MediaScanner indexing and a system notification.
+            - **In-App Auto-Update Checker**: Built-in background update checker verifies the latest release from GitHub and prompts the user to download and install updates directly within the app.
             - **Microphone Permission & Recording Fixed**: Fixed microphone permission prompting at startup and on-demand in Android WebView. Cross-origin applet iframe is granted full microphone audio capture permissions policy so recording begins immediately without permission denial.
             - **Resolved Google Sign-In Infinite Loading**: Fixed hanging circular progress spinner after entering Google credentials by ensuring all OAuth, lifecycle, and token exchange redirects complete natively without interruption.
             - **Lock Preview on Error**: Stopped AI Studio from shifting away to Chat when an error occurs. Applet iframe remains 100% fullscreen on Preview so doctors can read error messages and continue dictating.

@@ -68,6 +68,7 @@ public class MainActivity extends AppCompatActivity {
     private ProgressBar progressBar;
     private ValueCallback<Uri[]> filePathCallback;
     private String chromeUserAgent;
+    private PermissionRequest pendingPermissionRequest;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -80,13 +81,27 @@ public class MainActivity extends AppCompatActivity {
 
         startKeepAliveService();
         checkAndRequestPermissions();
-        requestBatteryOptimizationExemption();
         setupWebView();
+
+        // Delay battery optimization prompt by 3s so it never suppresses runtime permission dialogs
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            if (!isFinishing() && !isDestroyed()) {
+                requestBatteryOptimizationExemption();
+            }
+        }, 3000);
 
         if (savedInstanceState == null) {
             webView.loadUrl(TARGET_URL);
         } else {
             webView.restoreState(savedInstanceState);
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            checkAndRequestPermissions();
         }
     }
 
@@ -210,6 +225,9 @@ public class MainActivity extends AppCompatActivity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 progressBar.setVisibility(View.VISIBLE);
+                if (url != null && isAppletUrl(url)) {
+                    injectUiCleaner(view);
+                }
             }
 
             @Override
@@ -239,10 +257,40 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onPermissionRequest(final PermissionRequest request) {
-                runOnUiThread(() -> request.grant(request.getResources()));
+                runOnUiThread(() -> {
+                    boolean needsAudio = false;
+                    boolean needsVideo = false;
+                    for (String r : request.getResources()) {
+                        if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) {
+                            needsAudio = true;
+                        } else if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)) {
+                            needsVideo = true;
+                        }
+                    }
+
+                    List<String> missingPermissions = new ArrayList<>();
+                    if (needsAudio && ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                        missingPermissions.add(Manifest.permission.RECORD_AUDIO);
+                    }
+                    if (needsVideo && ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                        missingPermissions.add(Manifest.permission.CAMERA);
+                    }
+
+                    if (!missingPermissions.isEmpty()) {
+                        pendingPermissionRequest = request;
+                        ActivityCompat.requestPermissions(MainActivity.this, missingPermissions.toArray(new String[0]), PERMISSION_REQ_CODE);
+                    } else {
+                        request.grant(request.getResources());
+                    }
+                });
             }
 
             @Override
+            public void onPermissionRequestCanceled(PermissionRequest request) {
+                if (pendingPermissionRequest == request) {
+                    pendingPermissionRequest = null;
+                }
+            }
             public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
                 if (MainActivity.this.filePathCallback != null) {
                     MainActivity.this.filePathCallback.onReceiveValue(null);
@@ -315,13 +363,33 @@ public class MainActivity extends AppCompatActivity {
             "}" +
             "if (!isAppletPage()) return;" +
 
+            "var micAllowPolicy = 'microphone *; camera *; autoplay *; display-capture *; clipboard-read *; clipboard-write *;';" +
+
+            // 1. Hook Document.prototype.createElement so all iframes get allow attribute immediately upon creation
+            "if (!window.__raddocElementHooked) {" +
+                "window.__raddocElementHooked = true;" +
+                "try {" +
+                    "var origCreate = Document.prototype.createElement;" +
+                    "Document.prototype.createElement = function(tag, opts) {" +
+                        "var el = origCreate.call(this, tag, opts);" +
+                        "if (tag && typeof tag === 'string' && tag.toLowerCase() === 'iframe') {" +
+                            "try {" +
+                                "el.setAttribute('allow', micAllowPolicy);" +
+                                "el.allow = micAllowPolicy;" +
+                            "} catch(e) {}" +
+                        "}" +
+                        "return el;" +
+                    "};" +
+                "} catch(e) {}" +
+            "}" +
+
             "if (window.__raddocCleanInjected) {" +
                 "if (typeof window.__raddocEnforce === 'function') window.__raddocEnforce();" +
                 "return;" +
             "}" +
             "window.__raddocCleanInjected = true;" +
 
-            // 1. Intercept postMessage switchToChat error messages originating from the applet iframe
+            // 2. Intercept postMessage switchToChat error messages originating from the applet iframe
             "window.addEventListener('message', function(e) {" +
                 "try {" +
                     "var origin = (e.origin || '').toLowerCase();" +
@@ -347,16 +415,29 @@ public class MainActivity extends AppCompatActivity {
                 "} catch(ex) {}" +
             "}, true);" +
 
-            // 2. Main enforcement function
+            // 3. Main enforcement function
             "window.__raddocEnforce = function() {" +
                 "try {" +
                     "if (!isAppletPage()) return;" +
 
-                    // A. Pin the dictation applet iframe to fullscreen at high z-index
+                    // A. Pin the dictation applet iframe to fullscreen at high z-index and enable microphone
                     "var iframes = document.querySelectorAll('iframe');" +
                     "var appletIframe = null;" +
                     "for (var i = 0; i < iframes.length; i++) {" +
                         "var ifr = iframes[i];" +
+                        "try {" +
+                            "var curAllow = ifr.getAttribute('allow') || '';" +
+                            "if (curAllow.indexOf('microphone') === -1) {" +
+                                "ifr.setAttribute('allow', micAllowPolicy);" +
+                                "ifr.allow = micAllowPolicy;" +
+                                "if (!ifr.hasAttribute('data-raddoc-mic-set')) {" +
+                                    "ifr.setAttribute('data-raddoc-mic-set', 'true');" +
+                                    "if (ifr.src && ifr.src.indexOf('about:blank') === -1) {" +
+                                        "ifr.src = ifr.src;" +
+                                    "}" +
+                                "}" +
+                            "}" +
+                        "} catch(e) {}" +
                         "var src = (ifr.src || '').toLowerCase();" +
                         "if (src.indexOf('accounts.google') !== -1) continue;" +
                         "if (src.indexOf('usercontent') !== -1 || ifr.hasAttribute('sandbox') || (ifr.offsetWidth > 100 && ifr.offsetHeight > 100)) {" +
@@ -366,6 +447,10 @@ public class MainActivity extends AppCompatActivity {
                     "}" +
 
                     "if (appletIframe) {" +
+                        "try {" +
+                            "appletIframe.setAttribute('allow', micAllowPolicy);" +
+                            "appletIframe.allow = micAllowPolicy;" +
+                        "} catch(e) {}" +
                         "appletIframe.style.setProperty('position', 'fixed', 'important');" +
                         "appletIframe.style.setProperty('top', '0px', 'important');" +
                         "appletIframe.style.setProperty('left', '0px', 'important');" +
@@ -436,6 +521,33 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void openHtmlInChrome(String htmlContent, String filename) {
             runOnUiThread(() -> exportAndOpenInChrome(htmlContent, filename));
+        }
+
+        @JavascriptInterface
+        public boolean hasRecordAudioPermission() {
+            return ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+        }
+
+        @JavascriptInterface
+        public void requestRecordAudioPermission() {
+            runOnUiThread(() -> {
+                if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.RECORD_AUDIO}, PERMISSION_REQ_CODE);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void openAppSettings() {
+            runOnUiThread(() -> {
+                try {
+                    Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
         }
     }
 
@@ -911,6 +1023,45 @@ public class MainActivity extends AppCompatActivity {
                 filePathCallback = null;
             }
         }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSION_REQ_CODE) {
+            boolean audioGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+            if (pendingPermissionRequest != null) {
+                if (audioGranted) {
+                    pendingPermissionRequest.grant(pendingPermissionRequest.getResources());
+                } else {
+                    pendingPermissionRequest.deny();
+                    Toast.makeText(this, "Microphone permission is required for dictation recording", Toast.LENGTH_LONG).show();
+                }
+                pendingPermissionRequest = null;
+            }
+            if (!audioGranted) {
+                if (!ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.RECORD_AUDIO)) {
+                    showPermissionDeniedDialog();
+                }
+            }
+        }
+    }
+
+    private void showPermissionDeniedDialog() {
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Microphone Permission Required")
+            .setMessage("Microphone permission is required to record audio dictation. Please enable it in App Settings.")
+            .setPositiveButton("Open Settings", (dialog, which) -> {
+                try {
+                    Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
     }
 
     @Override

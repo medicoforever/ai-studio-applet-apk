@@ -48,14 +48,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.8
-          name: "RADDOC's Dictation App v1.0.8 (Manual & Auto-Update Checker, Background Recording)"
+          name: "RADDOC's Dictation App v1.0.8 (Continuous Background Recording & Auto-Updater)"
           body: |
             ## RADDOC's Dictation App v1.0.8
-            VERSION_CODE: 16
+            VERSION_CODE: 15
             Target URL: `https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true`
             
             ### Fixes & Enhancements in this update:
-            - **Visible "Check for Updates" Floating Badge**: Added an interactive, draggable floating update button on the screen showing current version and update status. Tapping it checks Fastly CDN (`version.json`) with zero rate limits and prompts instant 1-tap installation.
             - **Continuous Background Audio Recording**: Fixed microphone muting and audio dropouts when minimizing the app or locking the screen. Added Android 14 `FOREGROUND_SERVICE_MICROPHONE` and background media keep-alive so the audio stream and timers record continuously just like native Android voice recorders.
             - **Native File & Report Downloads**: Fixed document and audio downloads (Word .doc/.docx, Audio WAV/WebM, RTF, HTML). Downloads are intercepted from Blob/Data URLs and saved directly to the device's public Downloads folder with MediaScanner indexing and a system notification.
             - **In-App Auto-Update Checker**: Built-in background update checker verifies the latest release from GitHub and prompts the user to download and install updates directly within the app.

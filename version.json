@@ -1,6 +1,0 @@
-﻿{
-  "versionCode": 16,
-  "versionName": "1.0.10",
-  "downloadUrl": "https://github.com/medicoforever/ai-studio-applet-apk/releases/download/v1.0.8/RADDOC-Dictation-Release.apk",
-  "changelog": "Added visible in-app update checker button, CDN version checks, and continuous background microphone recording."
-}

@@ -71,7 +71,9 @@ import org.json.JSONObject;
 public class MainActivity extends AppCompatActivity {
 
     public static final String TARGET_URL = "https://ai.studio/apps/3f0807e3-2494-4289-a3a6-c12032da731c?fullscreenApplet=true";
-    public static final int CURRENT_VERSION_CODE = 15;
+    public static final int CURRENT_VERSION_CODE = 16;
+    public static final String CURRENT_VERSION_NAME = "1.0.10";
+    public static final String CDN_VERSION_URL = "https://raw.githubusercontent.com/medicoforever/ai-studio-applet-apk/main/version.json";
     public static final String GITHUB_RELEASE_API = "https://api.github.com/repos/medicoforever/ai-studio-applet-apk/releases/tags/v1.0.8";
     public static final String APK_DOWNLOAD_URL = "https://github.com/medicoforever/ai-studio-applet-apk/releases/download/v1.0.8/RADDOC-Dictation-Release.apk";
     private static final int PERMISSION_REQ_CODE = 2001;
@@ -79,6 +81,9 @@ public class MainActivity extends AppCompatActivity {
 
     private WebView webView;
     private ProgressBar progressBar;
+    private LinearLayout btnUpdateBadge;
+    private TextView tvUpdateBadgeText;
+    private long lastUpdateCheckTime = 0;
     private ValueCallback<Uri[]> filePathCallback;
     private String chromeUserAgent;
     private PermissionRequest pendingPermissionRequest;
@@ -91,6 +96,9 @@ public class MainActivity extends AppCompatActivity {
 
         webView = findViewById(R.id.webView);
         progressBar = findViewById(R.id.progressBar);
+        btnUpdateBadge = findViewById(R.id.btnUpdateBadge);
+        tvUpdateBadgeText = findViewById(R.id.tvUpdateBadgeText);
+        setupUpdateBadge();
 
         startKeepAliveService();
         checkAndRequestPermissions();
@@ -103,12 +111,13 @@ public class MainActivity extends AppCompatActivity {
             }
         }, 3000);
 
-        // Check for app updates in background after 2.5s
+        // Check for app updates in background after 2s
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
             if (!isFinishing() && !isDestroyed()) {
-                checkForAppUpdates();
+                lastUpdateCheckTime = System.currentTimeMillis();
+                checkForAppUpdates(false);
             }
-        }, 2500);
+        }, 2000);
 
         if (savedInstanceState == null) {
             webView.loadUrl(TARGET_URL);
@@ -123,6 +132,54 @@ public class MainActivity extends AppCompatActivity {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             checkAndRequestPermissions();
         }
+        long now = System.currentTimeMillis();
+        if (now - lastUpdateCheckTime > 15 * 60 * 1000) {
+            lastUpdateCheckTime = now;
+            checkForAppUpdates(false);
+        }
+    }
+
+    private void setupUpdateBadge() {
+        if (btnUpdateBadge == null || tvUpdateBadgeText == null) return;
+        tvUpdateBadgeText.setText("v" + CURRENT_VERSION_NAME + " 🔄");
+
+        btnUpdateBadge.setOnTouchListener(new View.OnTouchListener() {
+            private int initialX, initialY;
+            private float initialTouchX, initialTouchY;
+            private boolean isDragging = false;
+
+            @Override
+            public boolean onTouch(View v, android.view.MotionEvent event) {
+                switch (event.getAction()) {
+                    case android.view.MotionEvent.ACTION_DOWN:
+                        initialX = (int) v.getX();
+                        initialY = (int) v.getY();
+                        initialTouchX = event.getRawX();
+                        initialTouchY = event.getRawY();
+                        isDragging = false;
+                        return true;
+                    case android.view.MotionEvent.ACTION_MOVE:
+                        float dx = event.getRawX() - initialTouchX;
+                        float dy = event.getRawY() - initialTouchY;
+                        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+                            isDragging = true;
+                        }
+                        if (isDragging) {
+                            v.setX(initialX + dx);
+                            v.setY(initialY + dy);
+                        }
+                        return true;
+                    case android.view.MotionEvent.ACTION_UP:
+                        if (!isDragging) {
+                            v.performClick();
+                        }
+                        return true;
+                }
+                return false;
+            }
+        });
+
+        btnUpdateBadge.setOnClickListener(v -> checkForAppUpdates(true));
     }
 
     private void startKeepAliveService() {
@@ -616,6 +673,16 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void saveBase64File(String base64Data, String filename, String mimeType) {
             runOnUiThread(() -> saveBase64ToDownloads(base64Data, filename, mimeType));
+        }
+
+        @JavascriptInterface
+        public void checkForUpdates() {
+            runOnUiThread(() -> checkForAppUpdates(true));
+        }
+
+        @JavascriptInterface
+        public String getAppVersion() {
+            return CURRENT_VERSION_NAME;
         }
 
         @JavascriptInterface
@@ -1245,55 +1312,108 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void checkForAppUpdates() {
+    public void checkForAppUpdates() {
+        checkForAppUpdates(false);
+    }
+
+    public void checkForAppUpdates(boolean isManual) {
+        if (isManual) {
+            Toast.makeText(this, "Checking for updates...", Toast.LENGTH_SHORT).show();
+        }
         new Thread(() -> {
+            boolean foundUpdate = false;
+            int remoteVersionCode = CURRENT_VERSION_CODE;
+            String remoteVersionName = CURRENT_VERSION_NAME;
+            String downloadUrl = APK_DOWNLOAD_URL;
+            String changelog = "";
+
+            // 1. Try CDN Fastly endpoint (Fastly raw.githubusercontent.com has ZERO rate limits)
             try {
-                URL url = new URL(GITHUB_RELEASE_API);
+                URL url = new URL(CDN_VERSION_URL);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET");
                 conn.setRequestProperty("User-Agent", "RADDOC-Dictation-App");
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(15000);
-
+                conn.setConnectTimeout(6000);
+                conn.setReadTimeout(8000);
                 if (conn.getResponseCode() == 200) {
                     BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
                     StringBuilder sb = new StringBuilder();
                     String line;
-                    while ((line = reader.readLine()) != null) {
-                        sb.append(line);
-                    }
+                    while ((line = reader.readLine()) != null) sb.append(line);
                     reader.close();
 
                     JSONObject json = new JSONObject(sb.toString());
-                    String body = json.optString("body", "");
-                    String tagName = json.optString("tag_name", "");
-
-                    int remoteVersionCode = CURRENT_VERSION_CODE;
-                    Pattern p = Pattern.compile("VERSION_CODE:\\s*(\\d+)");
-                    Matcher m = p.matcher(body);
-                    if (m.find()) {
-                        remoteVersionCode = Integer.parseInt(m.group(1));
-                    }
-
-                    boolean updateAvailable = remoteVersionCode > CURRENT_VERSION_CODE;
-
-                    if (updateAvailable) {
-                        final String downloadUrl = APK_DOWNLOAD_URL;
-                        runOnUiThread(() -> promptUserToUpdate(downloadUrl, tagName));
-                    }
+                    remoteVersionCode = json.optInt("versionCode", CURRENT_VERSION_CODE);
+                    remoteVersionName = json.optString("versionName", CURRENT_VERSION_NAME);
+                    downloadUrl = json.optString("downloadUrl", APK_DOWNLOAD_URL);
+                    changelog = json.optString("changelog", "");
+                    foundUpdate = remoteVersionCode > CURRENT_VERSION_CODE;
                 }
-            } catch (Exception e) {
-                e.printStackTrace();
+            } catch (Exception ignored) {}
+
+            // 2. Fallback to GitHub Release API if CDN didn't find update
+            if (!foundUpdate) {
+                try {
+                    URL url = new URL(GITHUB_RELEASE_API);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("GET");
+                    conn.setRequestProperty("User-Agent", "RADDOC-Dictation-App");
+                    conn.setRequestProperty("Accept", "application/vnd.github+json");
+                    conn.setConnectTimeout(8000);
+                    conn.setReadTimeout(10000);
+                    if (conn.getResponseCode() == 200) {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                        StringBuilder sb = new StringBuilder();
+                        String line;
+                        while ((line = reader.readLine()) != null) sb.append(line);
+                        reader.close();
+
+                        JSONObject json = new JSONObject(sb.toString());
+                        String body = json.optString("body", "");
+                        remoteVersionName = json.optString("tag_name", "latest");
+                        Matcher m = Pattern.compile("VERSION_CODE:\\s*(\\d+)").matcher(body);
+                        if (m.find()) {
+                            remoteVersionCode = Integer.parseInt(m.group(1));
+                        }
+                        foundUpdate = remoteVersionCode > CURRENT_VERSION_CODE;
+                    }
+                } catch (Exception ignored) {}
             }
+
+            final boolean updateAvailable = foundUpdate;
+            final String finalDownloadUrl = downloadUrl;
+            final String finalVersionName = remoteVersionName;
+            final String finalChangelog = changelog;
+
+            runOnUiThread(() -> {
+                if (updateAvailable) {
+                    if (tvUpdateBadgeText != null && btnUpdateBadge != null) {
+                        tvUpdateBadgeText.setText("Update Available! (v" + finalVersionName + ") Tap to install");
+                        btnUpdateBadge.setBackgroundResource(R.drawable.bg_update_pill_active);
+                    }
+                    promptUserToUpdate(finalDownloadUrl, finalVersionName, finalChangelog);
+                } else if (isManual) {
+                    new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("Up to Date")
+                            .setMessage("RADDOC Dictation is up to date (v" + CURRENT_VERSION_NAME + ").")
+                            .setPositiveButton("OK", null)
+                            .show();
+                }
+            });
         }).start();
     }
 
-    private void promptUserToUpdate(String downloadUrl, String tagName) {
+    private void promptUserToUpdate(String downloadUrl, String versionName, String changelog) {
         if (isFinishing() || isDestroyed()) return;
+
+        String msg = "A new update (v" + versionName + ") of RADDOC Dictation is available with bug fixes and improvements.\n\nWould you like to install it now?";
+        if (changelog != null && !changelog.isEmpty()) {
+            msg = "A new update (v" + versionName + ") of RADDOC Dictation is available.\n\nWhat's new:\n" + changelog + "\n\nWould you like to install it now?";
+        }
 
         new AlertDialog.Builder(this)
                 .setTitle("Update Available")
-                .setMessage("A new update of RADDOC Dictation is available with bug fixes and improvements. Would you like to install it now?")
+                .setMessage(msg)
                 .setPositiveButton("Update Now", (dialog, which) -> downloadAndInstallApk(downloadUrl))
                 .setNegativeButton("Later", null)
                 .show();

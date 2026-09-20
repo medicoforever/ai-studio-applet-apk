@@ -67,14 +67,6 @@ import android.util.Base64;
 import android.app.AlertDialog;
 import android.app.ProgressDialog;
 import org.json.JSONObject;
-import android.content.ContentValues;
-import android.provider.MediaStore;
-import java.io.OutputStream;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Set;
-import androidx.webkit.WebViewCompat;
-import androidx.webkit.WebViewFeature;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -155,11 +147,6 @@ public class MainActivity extends AppCompatActivity {
                 permissions.add(Manifest.permission.POST_NOTIFICATIONS);
             }
         }
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
-            }
-        }
         if (!permissions.isEmpty()) {
             ActivityCompat.requestPermissions(this, permissions.toArray(new String[0]), PERMISSION_REQ_CODE);
         }
@@ -206,7 +193,6 @@ public class MainActivity extends AppCompatActivity {
         webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> handleDownload(url, userAgent, contentDisposition, mimetype));
 
         webView.addJavascriptInterface(new WebAppInterface(), "AndroidBridge");
-        setupWebMessageBridge(webView);
 
         // WebViewClient
         webView.setWebViewClient(new WebViewClient() {
@@ -579,6 +565,35 @@ public class MainActivity extends AppCompatActivity {
                             "}" +
                         "}" +
                     "}" +
+
+                    // E. Background Media Keep-Alive: ensures Chromium classifies page as active media player, exempting it from timer throttling & background audio capture suspension
+                    "if (!window.__raddocSilentAudio) {" +
+                        "try {" +
+                            "var audioCtx = new (window.AudioContext || window.webkitAudioContext)();" +
+                            "var buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 2, audioCtx.sampleRate);" +
+                            "var source = audioCtx.createBufferSource();" +
+                            "source.buffer = buffer;" +
+                            "source.loop = true;" +
+                            "var gainNode = audioCtx.createGain();" +
+                            "gainNode.gain.value = 0.0001;" +
+                            "source.connect(gainNode);" +
+                            "gainNode.connect(audioCtx.destination);" +
+                            "source.start(0);" +
+                            "window.__raddocSilentAudio = { ctx: audioCtx, src: source };" +
+                        "} catch(eAudio) {" +
+                            "try {" +
+                                "var a = document.createElement('audio');" +
+                                "a.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';" +
+                                "a.loop = true;" +
+                                "a.volume = 0.01;" +
+                                "a.play().catch(function(){});" +
+                                "window.__raddocSilentAudio = a;" +
+                            "} catch(eAudio2) {}" +
+                        "}" +
+                    "}" +
+                    "if (window.__raddocSilentAudio && window.__raddocSilentAudio.ctx && window.__raddocSilentAudio.ctx.state === 'suspended') {" +
+                        "window.__raddocSilentAudio.ctx.resume().catch(function(){});" +
+                    "}" +
                 "} catch(e) {}" +
             "};" +
 
@@ -586,10 +601,9 @@ public class MainActivity extends AppCompatActivity {
             "if (!window.__raddocInterval) {" +
                 "window.__raddocInterval = setInterval(window.__raddocEnforce, 300);" +
             "}" +
-        "})();";
+        })();";
 
         view.evaluateJavascript(js, null);
-        view.evaluateJavascript(getUniversalDownloadInjectionScript(), null);
     }
 
     // Native JavaScript Interface accessible from web context as window.AndroidBridge
@@ -602,11 +616,6 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void saveBase64File(String base64Data, String filename, String mimeType) {
             runOnUiThread(() -> saveBase64ToDownloads(base64Data, filename, mimeType));
-        }
-
-        @JavascriptInterface
-        public void downloadHttpFile(String url, String filename, String mimeType) {
-            runOnUiThread(() -> handleHttpDownload(url, chromeUserAgent, "attachment; filename=\"" + filename + "\"", mimeType));
         }
 
         @JavascriptInterface
@@ -811,8 +820,6 @@ public class MainActivity extends AppCompatActivity {
         cookieManager.setAcceptThirdPartyCookies(popupWebView, true);
 
         popupWebView.addJavascriptInterface(new WebAppInterface(), "AndroidBridge");
-        setupWebMessageBridge(popupWebView);
-        popupWebView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> handleDownload(url, userAgent, contentDisposition, mimetype));
 
         openInChromeBtn.setOnClickListener(v -> {
             popupWebView.evaluateJavascript("(function(){ return document.documentElement.outerHTML; })();", value -> {
@@ -1060,241 +1067,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void setupWebMessageBridge(WebView wv) {
-        if (wv == null) return;
-        try {
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-                Set<String> allowedOrigins = Collections.singleton("*");
-                WebViewCompat.addWebMessageListener(wv, "AndroidDownloadBridge", allowedOrigins,
-                        (view, message, sourceOrigin, isMainFrame, replyProxy) -> {
-                            String data = message.getData();
-                            if (data != null && !data.isEmpty()) {
-                                handleBridgeMessage(data);
-                            }
-                        });
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-
-        try {
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-                Set<String> allowedOrigins = Collections.singleton("*");
-                WebViewCompat.addDocumentStartJavaScript(wv, getUniversalDownloadInjectionScript(), allowedOrigins);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void handleBridgeMessage(String jsonStr) {
-        try {
-            JSONObject obj = new JSONObject(jsonStr);
-            String type = obj.optString("type", "");
-            if ("download".equals(type) || "saveBase64".equals(type)) {
-                String base64Data = obj.optString("data", "");
-                String filename = obj.optString("filename", "dictation_file");
-                String mimeType = obj.optString("mimeType", "");
-                runOnUiThread(() -> saveBase64ToDownloads(base64Data, filename, mimeType));
-            } else if ("downloadHttp".equals(type)) {
-                String url = obj.optString("url", "");
-                String filename = obj.optString("filename", "dictation_file");
-                String mimeType = obj.optString("mimeType", "");
-                runOnUiThread(() -> handleHttpDownload(url, chromeUserAgent, "attachment; filename=\"" + filename + "\"", mimeType));
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
-    private String getUniversalDownloadInjectionScript() {
-        return "(function() {\n" +
-                "    if (window.__raddocDownloadHooked) return;\n" +
-                "    window.__raddocDownloadHooked = true;\n" +
-                "\n" +
-                "    function sendToAndroid(base64Data, filename, mimeType) {\n" +
-                "        if (!base64Data) return false;\n" +
-                "        var fn = filename || 'dictation_file';\n" +
-                "        var mt = mimeType || '';\n" +
-                "        var sent = false;\n" +
-                "        try {\n" +
-                "            if (window.AndroidBridge && typeof window.AndroidBridge.saveBase64File === 'function') {\n" +
-                "                window.AndroidBridge.saveBase64File(base64Data, fn, mt);\n" +
-                "                sent = true;\n" +
-                "            }\n" +
-                "        } catch(e) {}\n" +
-                "        try {\n" +
-                "            if (window.AndroidDownloadBridge && typeof window.AndroidDownloadBridge.postMessage === 'function') {\n" +
-                "                window.AndroidDownloadBridge.postMessage(JSON.stringify({\n" +
-                "                    type: 'download',\n" +
-                "                    data: base64Data,\n" +
-                "                    filename: fn,\n" +
-                "                    mimeType: mt\n" +
-                "                }));\n" +
-                "                sent = true;\n" +
-                "            }\n" +
-                "        } catch(e) {}\n" +
-                "        return sent;\n" +
-                "    }\n" +
-                "\n" +
-                "    function processBlob(blob, filename, mimeType) {\n" +
-                "        if (!blob) return;\n" +
-                "        var fn = filename || (blob.name ? blob.name : 'dictation_file');\n" +
-                "        var mt = mimeType || blob.type || 'application/octet-stream';\n" +
-                "        var reader = new FileReader();\n" +
-                "        reader.onloadend = function() {\n" +
-                "            if (reader.result) {\n" +
-                "                sendToAndroid(reader.result, fn, mt);\n" +
-                "            }\n" +
-                "        };\n" +
-                "        reader.readAsDataURL(blob);\n" +
-                "    }\n" +
-                "\n" +
-                "    var blobCache = new Map();\n" +
-                "    try {\n" +
-                "        var origCreateObjectURL = window.URL.createObjectURL;\n" +
-                "        if (origCreateObjectURL) {\n" +
-                "            window.URL.createObjectURL = function(obj) {\n" +
-                "                var url = origCreateObjectURL.apply(this, arguments);\n" +
-                "                if (obj && (obj instanceof Blob || obj instanceof File)) {\n" +
-                "                    var name = (obj instanceof File && obj.name) ? obj.name : null;\n" +
-                "                    blobCache.set(url, { blob: obj, name: name, type: obj.type });\n" +
-                "                    if (blobCache.size > 200) {\n" +
-                "                        var first = blobCache.keys().next().value;\n" +
-                "                        blobCache.delete(first);\n" +
-                "                    }\n" +
-                "                }\n" +
-                "                return url;\n" +
-                "            };\n" +
-                "        }\n" +
-                "    } catch(e) {}\n" +
-                "\n" +
-                "    function handleUrlDownload(url, filename, mimeType) {\n" +
-                "        if (!url || typeof url !== 'string') return false;\n" +
-                "        var fn = filename || '';\n" +
-                "        var mt = mimeType || '';\n" +
-                "\n" +
-                "        if (blobCache.has(url)) {\n" +
-                "            var entry = blobCache.get(url);\n" +
-                "            processBlob(entry.blob, fn || entry.name, mt || entry.type);\n" +
-                "            return true;\n" +
-                "        }\n" +
-                "\n" +
-                "        if (url.indexOf('blob:') === 0) {\n" +
-                "            try {\n" +
-                "                var xhr = new XMLHttpRequest();\n" +
-                "                xhr.open('GET', url, true);\n" +
-                "                xhr.responseType = 'blob';\n" +
-                "                xhr.onload = function() {\n" +
-                "                    if (xhr.response) {\n" +
-                "                        processBlob(xhr.response, fn, mt || xhr.response.type);\n" +
-                "                    }\n" +
-                "                };\n" +
-                "                xhr.onerror = function() {\n" +
-                "                    try {\n" +
-                "                        fetch(url)\n" +
-                "                            .then(function(r) { return r.blob(); })\n" +
-                "                            .then(function(b) { processBlob(b, fn, mt || b.type); })\n" +
-                "                            .catch(function(err) {});\n" +
-                "                    } catch(fErr) {}\n" +
-                "                };\n" +
-                "                xhr.send();\n" +
-                "                return true;\n" +
-                "            } catch(e) {\n" +
-                "                try {\n" +
-                "                    fetch(url)\n" +
-                "                        .then(function(r) { return r.blob(); })\n" +
-                "                        .then(function(b) { processBlob(b, fn, mt || b.type); })\n" +
-                "                        .catch(function(err) {});\n" +
-                "                    return true;\n" +
-                "                } catch(err2) {}\n" +
-                "            }\n" +
-                "        }\n" +
-                "\n" +
-                "        if (url.indexOf('data:') === 0) {\n" +
-                "            sendToAndroid(url, fn || 'dictation_file', mt);\n" +
-                "            return true;\n" +
-                "        }\n" +
-                "\n" +
-                "        if (url.indexOf('http://') === 0 || url.indexOf('https://') === 0) {\n" +
-                "            var lower = url.toLowerCase();\n" +
-                "            var isFile = fn || lower.indexOf('.docx') !== -1 || lower.indexOf('.doc') !== -1 ||\n" +
-                "                         lower.indexOf('.wav') !== -1 || lower.indexOf('.webm') !== -1 ||\n" +
-                "                         lower.indexOf('.mp3') !== -1 || lower.indexOf('.rtf') !== -1 ||\n" +
-                "                         lower.indexOf('.pdf') !== -1 || lower.indexOf('.txt') !== -1 ||\n" +
-                "                         lower.indexOf('.html') !== -1;\n" +
-                "            if (isFile) {\n" +
-                "                try {\n" +
-                "                    if (window.AndroidBridge && typeof window.AndroidBridge.downloadHttpFile === 'function') {\n" +
-                "                        window.AndroidBridge.downloadHttpFile(url, fn, mt);\n" +
-                "                        return true;\n" +
-                "                    }\n" +
-                "                } catch(e) {}\n" +
-                "            }\n" +
-                "        }\n" +
-                "        return false;\n" +
-                "    }\n" +
-                "\n" +
-                "    try {\n" +
-                "        var origAnchorClick = HTMLAnchorElement.prototype.click;\n" +
-                "        HTMLAnchorElement.prototype.click = function() {\n" +
-                "            try {\n" +
-                "                var href = this.href || this.getAttribute('href') || '';\n" +
-                "                var dl = this.getAttribute('download') || this.download;\n" +
-                "                if (dl != null || href.indexOf('blob:') === 0 || href.indexOf('data:') === 0) {\n" +
-                "                    var handled = handleUrlDownload(href, dl, this.type);\n" +
-                "                    if (handled) return;\n" +
-                "                }\n" +
-                "            } catch(e) {}\n" +
-                "            return origAnchorClick.apply(this, arguments);\n" +
-                "        };\n" +
-                "    } catch(e) {}\n" +
-                "\n" +
-                "    function onGlobalClick(e) {\n" +
-                "        try {\n" +
-                "            var target = e.target;\n" +
-                "            while (target && target !== document && target.nodeName !== 'A') {\n" +
-                "                target = target.parentElement;\n" +
-                "            }\n" +
-                "            if (target && target.nodeName === 'A') {\n" +
-                "                var href = target.href || target.getAttribute('href') || '';\n" +
-                "                var dl = target.getAttribute('download') || target.download;\n" +
-                "                if (dl != null || href.indexOf('blob:') === 0 || href.indexOf('data:') === 0) {\n" +
-                "                    var handled = handleUrlDownload(href, dl, target.type);\n" +
-                "                    if (handled) {\n" +
-                "                        e.preventDefault();\n" +
-                "                        e.stopPropagation();\n" +
-                "                        e.stopImmediatePropagation();\n" +
-                "                    }\n" +
-                "                }\n" +
-                "            }\n" +
-                "        } catch(ex) {}\n" +
-                "    }\n" +
-                "    window.addEventListener('click', onGlobalClick, true);\n" +
-                "    document.addEventListener('click', onGlobalClick, true);\n" +
-                "\n" +
-                "    try {\n" +
-                "        var origWindowOpen = window.open;\n" +
-                "        window.open = function(url, target, features) {\n" +
-                "            if (typeof url === 'string' && (url.indexOf('blob:') === 0 || url.indexOf('data:') === 0)) {\n" +
-                "                var handled = handleUrlDownload(url, 'dictation_file', '');\n" +
-                "                if (handled) return null;\n" +
-                "            }\n" +
-                "            return origWindowOpen.apply(this, arguments);\n" +
-                "        };\n" +
-                "    } catch(e) {}\n" +
-                "\n" +
-                "    try {\n" +
-                "        if (window.navigator) {\n" +
-                "            window.navigator.msSaveBlob = window.navigator.msSaveOrOpenBlob = function(blob, filename) {\n" +
-                "                processBlob(blob, filename, blob ? blob.type : '');\n" +
-                "                return true;\n" +
-                "            };\n" +
-                "        }\n" +
-                "    } catch(e) {}\n" +
-                "})();";
-    }
-
     private void handleDownload(String url, String userAgent, String contentDisposition, String mimetype) {
         if (url == null || url.isEmpty()) return;
 
@@ -1330,17 +1102,7 @@ public class MainActivity extends AppCompatActivity {
                 "    reader.readAsDataURL(xhr.response);" +
                 "};" +
                 "xhr.onerror = function() {" +
-                "    try {" +
-                "        fetch(url).then(function(r){return r.blob();}).then(function(b){" +
-                "            var reader = new FileReader();" +
-                "            reader.onloadend = function() {" +
-                "                if (window.AndroidBridge && window.AndroidBridge.saveBase64File) {" +
-                "                    window.AndroidBridge.saveBase64File(reader.result, fname, mime);" +
-                "                }" +
-                "            };" +
-                "            reader.readAsDataURL(b);" +
-                "        });" +
-                "    } catch(e) {}" +
+                "    console.error('Failed to extract blob download');" +
                 "};" +
                 "xhr.send();" +
                 "})();";
@@ -1355,7 +1117,17 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception ignored) {}
         }
         if (filename == null || filename.isEmpty() || filename.equalsIgnoreCase("downloadfile") || filename.equalsIgnoreCase("downloadfile.bin")) {
-            String ext = getExtensionForMime(mimeType, "");
+            String ext = ".bin";
+            if (mimeType != null) {
+                String m = mimeType.toLowerCase();
+                if (m.contains("audio/wav") || m.contains("wav")) ext = ".wav";
+                else if (m.contains("audio/webm") || m.contains("webm")) ext = ".webm";
+                else if (m.contains("audio/mpeg") || m.contains("mp3")) ext = ".mp3";
+                else if (m.contains("word") || m.contains("msword") || m.contains(".document")) ext = ".doc";
+                else if (m.contains("rtf")) ext = ".rtf";
+                else if (m.contains("html")) ext = ".html";
+                else if (m.contains("text/plain") || m.contains("txt")) ext = ".txt";
+            }
             filename = "Dictation_File_" + System.currentTimeMillis() + ext;
         }
         return filename;
@@ -1367,9 +1139,7 @@ public class MainActivity extends AppCompatActivity {
             request.setMimeType(mimetype);
             String cookies = CookieManager.getInstance().getCookie(url);
             if (cookies != null) request.addRequestHeader("cookie", cookies);
-            if (userAgent != null && !userAgent.isEmpty()) {
-                request.addRequestHeader("User-Agent", userAgent);
-            }
+            request.addRequestHeader("User-Agent", userAgent);
             request.setDescription("Downloading file...");
             String filename = extractFilename(contentDisposition, mimetype);
             request.setTitle(filename);
@@ -1393,160 +1163,53 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void saveBase64ToDownloads(String base64Data, String filename, String mimeType) {
-        if (base64Data == null || base64Data.trim().isEmpty()) {
+        if (base64Data == null || base64Data.isEmpty()) {
             Toast.makeText(this, "Download failed: empty content", Toast.LENGTH_SHORT).show();
             return;
         }
+        try {
+            int commaIndex = base64Data.indexOf(",");
+            String pureBase64 = (commaIndex >= 0) ? base64Data.substring(commaIndex + 1) : base64Data;
+            byte[] fileBytes = Base64.decode(pureBase64, Base64.DEFAULT);
 
-        new Thread(() -> {
-            try {
-                String detectedMime = mimeType != null ? mimeType.trim() : "";
-                String pureBase64 = base64Data;
+            String safeName = (filename == null || filename.trim().isEmpty()) ? "Dictation_Report" : filename.trim();
+            safeName = safeName.replaceAll("[\\\\/:*?\"<>|]", "_");
 
-                if (base64Data.startsWith("data:")) {
-                    int commaIdx = base64Data.indexOf(",");
-                    if (commaIdx >= 0) {
-                        String header = base64Data.substring(5, commaIdx);
-                        pureBase64 = base64Data.substring(commaIdx + 1);
-                        if (detectedMime.isEmpty() && header.contains(";")) {
-                            detectedMime = header.substring(0, header.indexOf(";")).trim();
-                        }
-                    }
-                }
-
-                pureBase64 = pureBase64.replaceAll("\\s+", "");
-                byte[] fileBytes = Base64.decode(pureBase64, Base64.DEFAULT);
-
-                String safeName = (filename == null || filename.trim().isEmpty()) ? "Dictation_File" : filename.trim();
-                safeName = safeName.replaceAll("[\\\\/:*?\"<>|]", "_");
-
-                String finalExt = getExtensionForMime(detectedMime, safeName);
-                if (!safeName.contains(".") && !finalExt.isEmpty()) {
-                    safeName = safeName + finalExt;
-                }
-
-                String finalMime = getMimeForFilename(safeName, detectedMime);
-
-                Uri savedUri = null;
-
-                // Android 10+ (API 29+) MediaStore Scoped Storage
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    try {
-                        ContentValues values = new ContentValues();
-                        values.put(MediaStore.Downloads.DISPLAY_NAME, safeName);
-                        values.put(MediaStore.Downloads.MIME_TYPE, finalMime);
-                        values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-                        values.put(MediaStore.Downloads.IS_PENDING, 1);
-
-                        Uri collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
-                        savedUri = getContentResolver().insert(collection, values);
-
-                        if (savedUri != null) {
-                            try (OutputStream os = getContentResolver().openOutputStream(savedUri)) {
-                                if (os != null) {
-                                    os.write(fileBytes);
-                                    os.flush();
-                                }
-                            }
-                            values.clear();
-                            values.put(MediaStore.Downloads.IS_PENDING, 0);
-                            getContentResolver().update(savedUri, values, null, null);
-                        }
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                        savedUri = null;
-                    }
-                }
-
-                // Fallback for Android 9 and below (API <= 28) OR if MediaStore insert failed
-                if (savedUri == null) {
-                    File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                    if (!downloadsDir.exists()) {
-                        downloadsDir.mkdirs();
-                    }
-
-                    File targetFile = new File(downloadsDir, safeName);
-                    int counter = 1;
-                    String base = safeName;
-                    String ext = "";
-                    int dot = safeName.lastIndexOf('.');
-                    if (dot > 0) {
-                        base = safeName.substring(0, dot);
-                        ext = safeName.substring(dot);
-                    }
-                    while (targetFile.exists()) {
-                        targetFile = new File(downloadsDir, base + " (" + counter + ")" + ext);
-                        counter++;
-                    }
-
-                    try (FileOutputStream fos = new FileOutputStream(targetFile)) {
-                        fos.write(fileBytes);
-                        fos.flush();
-                    }
-
-                    MediaScannerConnection.scanFile(this, new String[]{targetFile.getAbsolutePath()}, new String[]{finalMime}, null);
-                    try {
-                        savedUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", targetFile);
-                    } catch (Exception ignored) {
-                        savedUri = Uri.fromFile(targetFile);
-                    }
-                }
-
-                final Uri notifUri = savedUri;
-                final String displayName = safeName;
-                final String notifMime = finalMime;
-
-                runOnUiThread(() -> {
-                    Toast.makeText(MainActivity.this, "Downloaded: " + displayName, Toast.LENGTH_LONG).show();
-                    if (notifUri != null) {
-                        showDownloadNotification(notifUri, displayName, notifMime);
-                    }
-                });
-
-            } catch (Exception e) {
-                e.printStackTrace();
-                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Save error: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            if (!downloadsDir.exists()) {
+                downloadsDir.mkdirs();
             }
-        }).start();
-    }
 
-    private String getExtensionForMime(String mimeType, String filename) {
-        if (filename != null && filename.contains(".")) {
-            return "";
+            File targetFile = new File(downloadsDir, safeName);
+            int counter = 1;
+            String base = safeName;
+            String ext = "";
+            int dot = safeName.lastIndexOf('.');
+            if (dot > 0) {
+                base = safeName.substring(0, dot);
+                ext = safeName.substring(dot);
+            }
+            while (targetFile.exists()) {
+                targetFile = new File(downloadsDir, base + " (" + counter + ")" + ext);
+                counter++;
+            }
+
+            FileOutputStream fos = new FileOutputStream(targetFile);
+            fos.write(fileBytes);
+            fos.flush();
+            fos.close();
+
+            MediaScannerConnection.scanFile(this, new String[]{targetFile.getAbsolutePath()}, null, null);
+            Toast.makeText(this, "Downloaded to Downloads/" + targetFile.getName(), Toast.LENGTH_LONG).show();
+
+            showDownloadNotification(targetFile, mimeType);
+        } catch (Exception e) {
+            e.printStackTrace();
+            Toast.makeText(this, "Save error: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
-        if (mimeType == null) return ".bin";
-        String m = mimeType.toLowerCase();
-        if (m.contains("audio/wav") || m.contains("wav")) return ".wav";
-        if (m.contains("audio/webm") || m.contains("webm")) return ".webm";
-        if (m.contains("audio/mpeg") || m.contains("mp3")) return ".mp3";
-        if (m.contains("audio/ogg") || m.contains("ogg")) return ".ogg";
-        if (m.contains("openxmlformats-officedocument.wordprocessingml.document") || m.contains("docx")) return ".docx";
-        if (m.contains("msword") || m.contains("doc")) return ".doc";
-        if (m.contains("pdf")) return ".pdf";
-        if (m.contains("rtf")) return ".rtf";
-        if (m.contains("html")) return ".html";
-        if (m.contains("text/plain") || m.contains("txt")) return ".txt";
-        return ".bin";
     }
 
-    private String getMimeForFilename(String filename, String fallbackMime) {
-        if (filename != null) {
-            String lower = filename.toLowerCase();
-            if (lower.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-            if (lower.endsWith(".doc")) return "application/msword";
-            if (lower.endsWith(".wav")) return "audio/wav";
-            if (lower.endsWith(".webm")) return "audio/webm";
-            if (lower.endsWith(".mp3")) return "audio/mpeg";
-            if (lower.endsWith(".ogg")) return "audio/ogg";
-            if (lower.endsWith(".pdf")) return "application/pdf";
-            if (lower.endsWith(".rtf")) return "application/rtf";
-            if (lower.endsWith(".html") || lower.endsWith(".htm")) return "text/html";
-            if (lower.endsWith(".txt")) return "text/plain";
-        }
-        return (fallbackMime != null && !fallbackMime.isEmpty()) ? fallbackMime : "application/octet-stream";
-    }
-
-    private void showDownloadNotification(Uri fileUri, String filename, String mimeType) {
+    private void showDownloadNotification(File file, String mimeType) {
         try {
             String channelId = "dictation_downloads";
             android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
@@ -1557,6 +1220,7 @@ public class MainActivity extends AppCompatActivity {
                 if (nm != null) nm.createNotificationChannel(channel);
             }
 
+            Uri fileUri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
             Intent viewIntent = new Intent(Intent.ACTION_VIEW);
             viewIntent.setDataAndType(fileUri, (mimeType != null && !mimeType.isEmpty()) ? mimeType : "*/*");
             viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -1569,7 +1233,7 @@ public class MainActivity extends AppCompatActivity {
             NotificationCompat.Builder builder = new NotificationCompat.Builder(this, channelId)
                     .setSmallIcon(R.mipmap.ic_launcher)
                     .setContentTitle("Download Complete")
-                    .setContentText(filename)
+                    .setContentText(file.getName())
                     .setAutoCancel(true)
                     .setContentIntent(pendingIntent);
 
@@ -1778,7 +1442,9 @@ public class MainActivity extends AppCompatActivity {
                 }
                 pendingPermissionRequest = null;
             }
-            if (!audioGranted) {
+            if (audioGranted) {
+                startKeepAliveService();
+            } else {
                 if (!ActivityCompat.shouldShowRequestPermissionRationale(this, Manifest.permission.RECORD_AUDIO)) {
                     showPermissionDeniedDialog();
                 }

@@ -601,7 +601,7 @@ public class MainActivity extends AppCompatActivity {
             "if (!window.__raddocInterval) {" +
                 "window.__raddocInterval = setInterval(window.__raddocEnforce, 300);" +
             "}" +
-        })();";
+            "})();";
 
         view.evaluateJavascript(js, null);
     }

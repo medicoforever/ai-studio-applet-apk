@@ -1,0 +1,37 @@
+import UIKit
+import AVFoundation
+
+class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+
+    var window: UIWindow?
+
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        guard let windowScene = (scene as? UIWindowScene) else { return }
+        
+        let window = UIWindow(windowScene: windowScene)
+        let rootVC = ViewController()
+        window.rootViewController = rootVC
+        self.window = window
+        window.makeKeyAndVisible()
+    }
+
+    func sceneDidDisconnect(_ scene: UIScene) {
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        UIApplication.shared.isIdleTimerDisabled = true
+        try? AVAudioSession.sharedInstance().setActive(true)
+    }
+
+    func sceneWillResignActive(_ scene: UIScene) {
+    }
+
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        UIApplication.shared.isIdleTimerDisabled = true
+        try? AVAudioSession.sharedInstance().setActive(true)
+    }
+
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        try? AVAudioSession.sharedInstance().setActive(true)
+    }
+}
